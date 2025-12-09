@@ -1,23 +1,23 @@
 name: Dynamics → MijnDiAd
 
 on:
-  workflow_dispatch:   # Manual trigger for testing
+  workflow_dispatch:
 
 jobs:
-  create-client:
+  run:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: '8.0.x'
 
-      - name: Run Program
+      - name: Run Dynamics to MijnDiAd
+        run: dotnet run --project MijnDiadAutomation dynamics.json
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-        run: dotnet run --project Program.cs DynamicsData.json
