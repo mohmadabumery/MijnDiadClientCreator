@@ -8,6 +8,6 @@
   "Address1_City": "Enschede",
   "Address1_PostalCode": "75422 LV",
   "Address1_PostOfficeBox": "35",
-  "GenderCode": "1",
+  "GenderCode": 1,
   "Address1_Country": "NL"
 }
