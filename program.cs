@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 
 class Program
 {
+    // Model matching your Dynamics onboarding form
     public class DynamicsClient
     {
         public string FirstName { get; set; }
@@ -27,7 +28,7 @@ class Program
     {
         if (args.Length < 1)
         {
-            Console.WriteLine("Please provide the path to the Dynamics JSON payload (e.g., dynamics.json).");
+            Console.WriteLine("Usage: dotnet run --project Program.cs dynamics.json");
             return;
         }
 
@@ -47,7 +48,7 @@ class Program
             return;
         }
 
-        // Prepare MijnDiAd payload
+        // Build payload for MijnDiAd API
         var mijnDiadPayload = new
         {
             firstname = clientData.FirstName,
@@ -55,12 +56,12 @@ class Program
             gender = clientData.GenderCode,
             nationality = clientData.Nationality ?? "",
             date_of_birth = clientData.BirthDate,
-            date_of_intake = DateTime.UtcNow.ToString("yyyy-MM-dd"),
+            date_of_intake = DateTime.UtcNow.ToString("yyyy-MM-dd"), // today
             email = clientData.EMailAddress1,
             phonenumber = clientData.Address1_Telephone1,
             reminder = 1,
             confirmation = 1,
-            invoice_relation_id = 15,
+            invoice_relation_id = 15,  // default value
             invoice_send_method = 1,
             is_active = 1,
             address = new
@@ -78,13 +79,14 @@ class Program
             allow_dubble_email = 0
         };
 
+        // Read secrets from environment variables (GitHub Actions)
         string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
         string sessionCookie = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION") ?? "";
         string xsrfToken = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF") ?? "";
 
         if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
         {
-            Console.WriteLine("Missing session cookie or CSRF token in environment variables.");
+            Console.WriteLine("Session cookie or CSRF token missing in environment variables.");
             return;
         }
 
