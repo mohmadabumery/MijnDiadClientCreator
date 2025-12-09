@@ -1,1 +1,29 @@
+name: Create MijnDiAd Client
+
+on:
+  workflow_dispatch: # manual trigger for testing
+
+jobs:
+  create-client:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Install Playwright
+      run: |
+        dotnet tool install --global Microsoft.Playwright.CLI
+        playwright install
+
+    - name: Run client creation
+      env:
+        MIJNDIAD_EMAIL: ${{ secrets.MIJNDIAD_EMAIL }}
+        MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
+      run: dotnet run --project YourProjectName DynamicsData.json
 
