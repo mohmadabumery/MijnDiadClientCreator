@@ -1,13 +1,14 @@
-name: Dynamics → MijnDiAd
+name: Dynamics → MijnDiAd Automation
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # allows manual trigger from GitHub
 
 jobs:
-  run:
+  run-automation:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Setup .NET
@@ -15,8 +16,8 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Run Dynamics to MijnDiAd
-        run: dotnet run --project MijnDiadAutomation DynamicsData.json
+      - name: Run MijnDiAd Automation
+        run: dotnet run --project MijnDiadAutomation MijnDiadAutomation/dynamics.json
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
