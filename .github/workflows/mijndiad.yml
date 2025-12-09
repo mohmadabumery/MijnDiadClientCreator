@@ -20,4 +20,4 @@ jobs:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-        run: dotnet run --project Program.cs dynamics.json
+        run: dotnet run --project Program.cs DynamicsData.json
