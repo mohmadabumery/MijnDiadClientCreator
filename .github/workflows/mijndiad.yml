@@ -1,14 +1,13 @@
-name: Create MijnDiAd Client
+name: Dynamics → MijnDiAd
 
 on:
-  workflow_dispatch: # can trigger manually or via webhook
+  workflow_dispatch:   # Manual trigger for testing
 
 jobs:
   create-client:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Setup .NET
@@ -16,13 +15,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Install Playwright
-        run: |
-          dotnet tool install --global Microsoft.Playwright.CLI
-          playwright install
-
-      - name: Run client creation
+      - name: Run Program
         env:
-          MIJNDIAD_EMAIL: ${{ secrets.MIJNDIAD_EMAIL }}
-          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-        run: dotnet run --project . DynamicsData.json
+          MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
+          MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
+          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+        run: dotnet run --project Program.cs dynamics.json
