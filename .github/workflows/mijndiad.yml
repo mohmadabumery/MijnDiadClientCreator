@@ -16,7 +16,7 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Run Dynamics to MijnDiAd
-        run: dotnet run --project MijnDiadAutomation dynamics.json
+        run: dotnet run --project MijnDiadAutomation DynamicsData.json
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
