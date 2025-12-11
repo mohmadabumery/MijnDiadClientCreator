@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace MijnDiadAutomation
@@ -13,29 +12,34 @@ namespace MijnDiadAutomation
         {
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
-            if (args.Length == 0)
+            // New: detect direct JSON input
+            string dynamicsJson = null;
+
+            if (args.Length == 2 && args[0] == "--json")
             {
-                Console.WriteLine("Please provide the path to the Dynamics JSON file as an argument.");
+                dynamicsJson = args[1];
+            }
+            else if (args.Length == 1 && File.Exists(args[0]))
+            {
+                dynamicsJson = await File.ReadAllTextAsync(args[0]);
+            }
+            else
+            {
+                Console.WriteLine("Usage:");
+                Console.WriteLine("dotnet run -- --json \"{ ... }\"");
+                Console.WriteLine("or");
+                Console.WriteLine("dotnet run path/to/file.json");
                 return;
             }
 
-            string jsonFilePath = args[0];
-            if (!File.Exists(jsonFilePath))
-            {
-                Console.WriteLine($"File not found: {jsonFilePath}");
-                return;
-            }
-
-            string dynamicsJson = await File.ReadAllTextAsync(jsonFilePath);
-
-            // Read secrets from environment (GitHub Actions)
+            // Read secrets from GitHub or environment
             string sessionCookie = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION");
             string xsrfToken = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF");
             string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
 
             if (string.IsNullOrWhiteSpace(sessionCookie) || string.IsNullOrWhiteSpace(xsrfToken))
             {
-                Console.WriteLine("Session cookie or XSRF token is missing. Set them as GitHub secrets.");
+                Console.WriteLine("Session cookie or XSRF token is missing.");
                 return;
             }
 
@@ -50,7 +54,6 @@ namespace MijnDiadAutomation
             {
                 var response = await client.PostAsync(url, content);
                 var result = await response.Content.ReadAsStringAsync();
-
                 Console.WriteLine("\n== MijnDiAd Response ==");
                 Console.WriteLine(result);
             }
