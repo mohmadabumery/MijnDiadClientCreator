@@ -1,23 +1,31 @@
 name: Dynamics → MijnDiAd Automation
 
 on:
-  workflow_dispatch:  # allows manual trigger from GitHub
+  push:
+    paths:
+      - 'pending/*.json'
+  workflow_dispatch:
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-
+      
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
-
-      - name: Run MijnDiAd Automation
-        run: dotnet run --project MijnDiadAutomation MijnDiadAutomation/dynamics.json
+      
+      - name: Process pending client files
+        run: |
+          for file in pending/*.json; do
+            if [ -f "$file" ]; then
+              echo "Processing $file"
+              dotnet run --project MijnDiadAutomation "$file"
+            fi
+          done
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
