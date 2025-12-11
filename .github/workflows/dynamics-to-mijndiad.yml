@@ -1,31 +1,29 @@
 name: Dynamics → MijnDiAd Automation
 
 on:
-  push:
-    paths:
-      - 'pending/*.json'
   workflow_dispatch:
+    inputs:
+      dynamics_json:
+        description: "JSON payload from Power Automate"
+        required: true
+        type: string
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-      
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
-      
-      - name: Process pending client files
+
+      - name: Run MijnDiAd Automation
         run: |
-          for file in pending/*.json; do
-            if [ -f "$file" ]; then
-              echo "Processing $file"
-              dotnet run --project MijnDiadAutomation "$file"
-            fi
-          done
+          dotnet run --project MijnDiadAutomation -- --json '${{ inputs.dynamics_json }}'
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
