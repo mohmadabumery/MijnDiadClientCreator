@@ -23,6 +23,7 @@ jobs:
       - name: Install Playwright
         run: |
           dotnet tool install --global Microsoft.Playwright.CLI
+          cd MijnDiadAutomation
           playwright install
 
       - name: Run MijnDiAd Automation with Auto-Login
