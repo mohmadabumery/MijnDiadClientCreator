@@ -1,130 +1,216 @@
 using System;
+using System.IO;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Microsoft.Playwright;
+using System.Security.Cryptography;
+using System.Linq;
 
 namespace MijnDiadAutomation
 {
-    public class ClientData
-    {
-        public string Salutation { get; set; }
-        public string Firstname { get; set; }
-        public string Lastname { get; set; }
-        public string Gender { get; set; }
-        public string DateOfBirth { get; set; }
-        public string DateOfIntake { get; set; }
-        public string Email { get; set; }
-        public string MobileNumber { get; set; }
-        public string Reminder { get; set; }
-        public string Confirmation { get; set; }
-        public string InvoiceRelationId { get; set; }
-        public string InvoiceSendMethod { get; set; }
-        public string IsActive { get; set; }
-        public AddressData Address { get; set; }
-        public AddressData InvoiceAddress { get; set; }
-        public string DifferentPostAddress { get; set; }
-        public object[] ClientAttributes { get; set; }
-        public object[] ClientGroupIds { get; set; }
-        public string AllowDubbleEmail { get; set; }
-    }
-
-    public class AddressData
-    {
-        public string Country { get; set; }
-        public string Zipcode { get; set; }
-        public string HouseNumber { get; set; }
-        public string Street { get; set; }
-        public string City { get; set; }
-    }
-
     class Program
     {
-        static async Task<int> Main(string[] args)
+        static async Task Main(string[] args)
         {
+            Console.WriteLine("== Dynamics → MijnDiAd Automation with Auto-Login ==");
+            
             if (args.Length == 0)
             {
-                Console.WriteLine("No JSON input provided!");
-                return 1;
+                Console.WriteLine("Please provide the path to the Dynamics JSON file as an argument.");
+                return;
             }
 
-            var clientJson = args[0];
-            ClientData client;
-            try
+            string jsonFilePath = args[0];
+            if (!File.Exists(jsonFilePath))
             {
-                client = JsonSerializer.Deserialize<ClientData>(clientJson);
-            }
-            catch
-            {
-                Console.WriteLine("Invalid JSON input!");
-                return 1;
+                Console.WriteLine($"File not found: {jsonFilePath}");
+                return;
             }
 
+            string dynamicsJson = await File.ReadAllTextAsync(jsonFilePath);
+
+            // Read secrets from environment
             string username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
             string password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
             string totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
-            string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT");
+            string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
+
+            if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password) || string.IsNullOrWhiteSpace(totpSecret))
+            {
+                Console.WriteLine("Missing credentials. Set MIJNDIAD_USERNAME, MIJNDIAD_PASSWORD, and MIJNDIAD_TOTP_SECRET as GitHub secrets.");
+                return;
+            }
+
+            // Step 1: Login and get session cookies
+            Console.WriteLine("\n[1/3] Logging in to MijnDiAd...");
+            var (sessionCookie, xsrfToken) = await LoginToMijnDiad(username, password, totpSecret, tenant);
+            
+            if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
+            {
+                Console.WriteLine("❌ Login failed. Could not retrieve session cookies.");
+                return;
+            }
+
+            Console.WriteLine("✓ Login successful!");
+
+            // Step 2: Post client data to MijnDiAd API
+            Console.WriteLine("\n[2/3] Creating client in MijnDiAd...");
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
+            client.DefaultRequestHeaders.Add("Cookie", $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
+
+            var content = new StringContent(dynamicsJson, Encoding.UTF8, "application/json");
+            var url = $"https://{tenant}.mijndiad.nl/api/clients";
 
             try
             {
-                using var playwright = await Playwright.CreateAsync();
-                var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                var response = await client.PostAsync(url, content);
+                var result = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("\n[3/3] MijnDiAd Response:");
+                Console.WriteLine(result);
+
+                if (response.IsSuccessStatusCode)
                 {
-                    Headless = true
-                });
-
-                var context = await browser.NewContextAsync();
-                var page = await context.NewPageAsync();
-
-                // Login
-                await page.GotoAsync($"https://{tenant}.mijndiad.nl/login", new PageGotoOptions { Timeout = 60000 });
-                await page.FillAsync("input[name=email]", username);
-                await page.FillAsync("input[name=password]", password);
-                await page.ClickAsync("button[type=submit]");
-
-                // OTP screen
-                var otpInput = page.Locator("input[name='totp'], input[id*='totp'], input[type='text'], input[type='number']");
-                if (await otpInput.CountAsync() > 0)
-                {
-                    string totpCode = OtpGenerator.GenerateTOTP(totpSecret);
-                    await otpInput.FillAsync(totpCode);
-                    await page.ClickAsync("button[type=submit]");
+                    Console.WriteLine("\n✓ Client created successfully!");
+                    
+                    // Clean up processed file
+                    File.Delete(jsonFilePath);
+                    Console.WriteLine($"✓ Cleaned up: {jsonFilePath}");
                 }
-
-                // Wait until dashboard loads
-                await page.WaitForURLAsync($"**/{tenant}/dashboard", new PageWaitForURLOptions { Timeout = 60000 });
-
-                // Navigate to client creation page
-                await page.GotoAsync($"https://{tenant}.mijndiad.nl/clients/new");
-
-                // Fill client form
-                await page.FillAsync("input[name=firstname]", client.Firstname);
-                await page.FillAsync("input[name=lastname]", client.Lastname);
-                await page.FillAsync("input[name=email]", client.Email);
-                await page.FillAsync("input[name=zipcode]", client.Address.Zipcode);
-                await page.FillAsync("input[name=street]", client.Address.Street);
-                await page.FillAsync("input[name=city]", client.Address.City);
-                // Add more fields as needed...
-
-                await page.ClickAsync("button[type=submit]");
-
-                Console.WriteLine(JsonSerializer.Serialize(new { status = "success", message = "Client created!" }));
-                return 0;
+                else
+                {
+                    Console.WriteLine($"\n❌ Failed to create client. Status: {response.StatusCode}");
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine(JsonSerializer.Serialize(new { status = "error", message = ex.Message }));
-                return 1;
+                Console.WriteLine($"❌ Error sending request: {ex.Message}");
             }
         }
-    }
 
-    public static class OtpGenerator
-    {
-        public static string GenerateTOTP(string secret)
+        static async Task<(string sessionCookie, string xsrfToken)> LoginToMijnDiad(string username, string password, string totpSecret, string tenant)
         {
-            var bytes = Base32.Base32Encoding.ToBytes(secret);
-            var totp = new OtpNet.Totp(bytes);
-            return totp.ComputeTotp();
+            using var client = new HttpClient();
+            
+            // Generate TOTP code
+            string totpCode = GenerateTOTP(totpSecret);
+            Console.WriteLine($"Generated TOTP: {totpCode}");
+
+            // Prepare login request
+            var loginData = new
+            {
+                email = username,
+                password = password,
+                totp_code = totpCode,
+                tenant = tenant
+            };
+
+            var loginJson = JsonSerializer.Serialize(loginData);
+            var content = new StringContent(loginJson, Encoding.UTF8, "application/json");
+            
+            var loginUrl = $"https://{tenant}.mijndiad.nl/login";
+
+            try
+            {
+                var response = await client.PostAsync(loginUrl, content);
+                
+                // Extract cookies from response
+                if (response.Headers.TryGetValues("Set-Cookie", out var cookies))
+                {
+                    string sessionCookie = null;
+                    string xsrfToken = null;
+
+                    foreach (var cookie in cookies)
+                    {
+                        if (cookie.Contains($"{tenant}_session="))
+                        {
+                            sessionCookie = ExtractCookieValue(cookie, $"{tenant}_session=");
+                        }
+                        if (cookie.Contains("XSRF-TOKEN="))
+                        {
+                            xsrfToken = ExtractCookieValue(cookie, "XSRF-TOKEN=");
+                        }
+                    }
+
+                    return (sessionCookie, xsrfToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Login error: {ex.Message}");
+            }
+
+            return (null, null);
+        }
+
+        static string ExtractCookieValue(string cookieHeader, string cookieName)
+        {
+            int start = cookieHeader.IndexOf(cookieName);
+            if (start == -1) return null;
+            
+            start += cookieName.Length;
+            int end = cookieHeader.IndexOf(';', start);
+            if (end == -1) end = cookieHeader.Length;
+            
+            return cookieHeader.Substring(start, end - start);
+        }
+
+        static string GenerateTOTP(string base32Secret, int digits = 6, int period = 30)
+        {
+            byte[] secretBytes = Base32Decode(base32Secret);
+            
+            long epoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            long counter = epoch / period;
+            
+            // Convert counter to 8-byte big endian
+            byte[] counterBytes = new byte[8];
+            for (int i = 7; i >= 0; i--)
+            {
+                counterBytes[i] = (byte)(counter & 0xFF);
+                counter >>= 8;
+            }
+            
+            // Compute HMAC-SHA1
+            using var hmac = new HMACSHA1(secretBytes);
+            byte[] hash = hmac.ComputeHash(counterBytes);
+            
+            // Dynamic truncation
+            int offset = hash[hash.Length - 1] & 0x0F;
+            int binary = ((hash[offset] & 0x7F) << 24) |
+                        ((hash[offset + 1] & 0xFF) << 16) |
+                        ((hash[offset + 2] & 0xFF) << 8) |
+                        (hash[offset + 3] & 0xFF);
+            
+            int otp = binary % (int)Math.Pow(10, digits);
+            return otp.ToString($"D{digits}");
+        }
+
+        static byte[] Base32Decode(string base32)
+        {
+            const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+            string bits = "";
+            
+            foreach (char c in base32.ToUpper())
+            {
+                int index = alphabet.IndexOf(c);
+                if (index < 0) continue;
+                bits += Convert.ToString(index, 2).PadLeft(5, '0');
+            }
+            
+            var bytes = new System.Collections.Generic.List<byte>();
+            for (int i = 0; i < bits.Length; i += 8)
+            {
+                int length = Math.Min(8, bits.Length - i);
+                string segment = bits.Substring(i, length);
+                if (segment.Length == 8)
+                {
+                    bytes.Add(Convert.ToByte(segment, 2));
+                }
+            }
+            
+            return bytes.ToArray();
         }
     }
 }
