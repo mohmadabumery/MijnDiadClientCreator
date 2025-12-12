@@ -1,14 +1,17 @@
-name: Dynamics → MijnDiAd Automation (Auto-Login)
+name: Dynamics → MijnDiAd Automation
 
 on:
-  push:
-    paths:
-      - 'pending/*.json'
   workflow_dispatch:
+    inputs:
+      dynamics_json:
+        description: "JSON payload from Power Automate"
+        required: true
+        type: string
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -17,26 +20,11 @@ jobs:
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
-      
-      - name: Process pending client files
+
+      - name: Run MijnDiAd Automation
         run: |
-          for file in pending/*.json; do
-            if [ -f "$file" ]; then
-              echo "Processing $file"
-              dotnet run --project MijnDiadAutomation "$file"
-            fi
-          done
+          dotnet run --project MijnDiadAutomation -- --json '${{ inputs.dynamics_json }}'
         env:
-          MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+          MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
+          MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-      
-      - name: Commit processed files cleanup
-        if: always()
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add -A
-          git diff --quiet && git diff --staged --quiet || git commit -m "Cleanup processed client files"
-          git push
