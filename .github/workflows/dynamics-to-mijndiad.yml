@@ -11,6 +11,7 @@ on:
 jobs:
   run-automation:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -20,12 +21,9 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install and setup Playwright
+      - name: Install Playwright CLI
         run: |
           dotnet tool install --global Microsoft.Playwright.CLI
-          cd MijnDiadAutomation
-          dotnet restore
-          dotnet build
           playwright install
 
       - name: Run MijnDiAd Automation with Auto-Login
@@ -44,4 +42,3 @@ jobs:
             echo "✓ Client successfully created in MijnDiAd EPD"
           else
             echo "❌ Failed to create client - check logs above"
-          fi
