@@ -1,48 +1,39 @@
-name: MijnDiAd Client Creator
+name: MijnDiad Client Creator
 
 on:
   workflow_dispatch:
     inputs:
-      clientData:
-        description: 'JSON input for client creation'
+      client_data:
+        description: 'JSON for new client'
         required: true
-        default: '{}'
 
 jobs:
   build-and-run:
     runs-on: ubuntu-latest
 
-    env:
-      DOTNET_ROOT: /usr/share/dotnet
-      MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-      MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-      MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
-      MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Setup .NET 8
+      - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: 8.0.x
 
-      - name: Install Playwright .NET package
-        run: dotnet add MijnDiadAutomation package Microsoft.Playwright --version 1.43.0
-
-      - name: Restore and build project
-        run: |
-          dotnet restore MijnDiadAutomation/MijnDiadAutomation.csproj
-          dotnet build MijnDiadAutomation/MijnDiadAutomation.csproj
-
-      - name: Install Playwright browsers
+      - name: Install Playwright CLI
         run: |
           dotnet tool install --global Microsoft.Playwright.CLI
-          export PATH="$PATH:$HOME/.dotnet/tools"
           playwright install
 
-      - name: Run MijnDiAd Automation
+      - name: Restore & Build
         run: |
-          dotnet run --project MijnDiadAutomation \
-            -- --json '${{ github.event.inputs.clientData }}'
+          dotnet restore MijnDiadAutomation
+          dotnet build MijnDiadAutomation --configuration Release
+
+      - name: Run Automation
+        env:
+          MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
+          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
+          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+        run: |
+          dotnet run --project MijnDiadAutomation -- --json '${{ github.event.inputs.client_data }}'
