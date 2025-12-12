@@ -5,7 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Security.Cryptography;
-using System.Collections.Generic;
+using System.Linq;
 
 namespace MijnDiadAutomation
 {
@@ -15,6 +15,7 @@ namespace MijnDiadAutomation
         {
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
+            // Parse input JSON
             string dynamicsJson = null;
             if (args.Length == 2 && args[0] == "--json")
             {
@@ -26,10 +27,14 @@ namespace MijnDiadAutomation
             }
             else
             {
-                Console.WriteLine("Usage: dotnet run -- --json \"{ ... }\" or dotnet run path/to/file.json");
+                Console.WriteLine("Usage:");
+                Console.WriteLine("dotnet run -- --json \"{ ... }\"");
+                Console.WriteLine("or");
+                Console.WriteLine("dotnet run path/to/file.json");
                 return;
             }
 
+            // Read credentials from environment
             string username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
             string password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
             string totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
@@ -41,6 +46,7 @@ namespace MijnDiadAutomation
                 return;
             }
 
+            // Step 1: Login to get fresh session cookies
             Console.WriteLine("\n[Step 1/3] Logging in to MijnDiAd...");
             var (sessionCookie, xsrfToken) = await LoginToMijnDiad(username, password, totpSecret, tenant);
 
@@ -52,6 +58,7 @@ namespace MijnDiadAutomation
 
             Console.WriteLine("✓ Login successful! Got fresh session cookies.");
 
+            // Step 2: Post client data to MijnDiAd API
             Console.WriteLine("\n[Step 2/3] Creating client in MijnDiAd...");
             using var client = new HttpClient();
             client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
@@ -85,63 +92,101 @@ namespace MijnDiadAutomation
             }
         }
 
+        // -------------------- LOGIN FUNCTION --------------------
         static async Task<(string sessionCookie, string xsrfToken)> LoginToMijnDiad(string username, string password, string totpSecret, string tenant)
         {
-            using var handler = new HttpClientHandler { AllowAutoRedirect = false, UseCookies = true };
+            using var handler = new HttpClientHandler
+            {
+                AllowAutoRedirect = true, // follow redirects
+                UseCookies = false        // manually handle cookies
+            };
             using var client = new HttpClient(handler);
 
-            // Generate TOTP code
-            string totpCode = string.IsNullOrWhiteSpace(totpSecret) ? null : GenerateTOTP(totpSecret);
-            if (!string.IsNullOrWhiteSpace(totpCode))
+            // Generate TOTP if secret provided
+            string totpCode = null;
+            if (!string.IsNullOrWhiteSpace(totpSecret))
+            {
+                totpCode = GenerateTOTP(totpSecret);
                 Console.WriteLine($"  Generated TOTP code: {totpCode}");
+            }
 
-            // Step 1: Get login page to extract XSRF-TOKEN
+            // Fetch login page to get XSRF token
             var loginPageUrl = $"https://{tenant}.mijndiad.nl/login";
+            Console.WriteLine($"  Fetching login page for tenant '{tenant}' ...");
             var pageResponse = await client.GetAsync(loginPageUrl);
-            string xsrfFromPage = null;
+            pageResponse.EnsureSuccessStatusCode();
+
+            string xsrfToken = null;
             if (pageResponse.Headers.TryGetValues("Set-Cookie", out var pageCookies))
             {
                 foreach (var cookie in pageCookies)
                 {
                     if (cookie.Contains("XSRF-TOKEN="))
-                        xsrfFromPage = ExtractCookieValue(cookie, "XSRF-TOKEN=");
+                    {
+                        xsrfToken = ExtractCookieValue(cookie, "XSRF-TOKEN=");
+                        Console.WriteLine($"  ✓ Extracted XSRF token from cookie");
+                    }
                 }
             }
 
-            // Step 2: Send form-encoded login POST
-            var postData = new Dictionary<string, string>
+            if (xsrfToken == null)
             {
-                ["email"] = username,
-                ["password"] = password,
-                ["totp"] = totpCode ?? "",
-                ["remember"] = "true"
+                Console.WriteLine("❌ Could not find XSRF token.");
+                return (null, null);
+            }
+
+            // Prepare login payload
+            var loginData = new
+            {
+                email = username,
+                password = password,
+                totp = totpCode,
+                remember = true
             };
+            var loginJson = JsonSerializer.Serialize(loginData);
+            var content = new StringContent(loginJson, Encoding.UTF8, "application/json");
 
-            var content = new FormUrlEncodedContent(postData);
+            // Post to AJAX login endpoint
+            var loginUrl = $"https://{tenant}.mijndiad.nl/api/auth/login";
+            var request = new HttpRequestMessage(HttpMethod.Post, loginUrl)
+            {
+                Content = content
+            };
+            request.Headers.Add("X-XSRF-TOKEN", xsrfToken);
 
-            if (!string.IsNullOrEmpty(xsrfFromPage))
-                client.DefaultRequestHeaders.Add("X-XSRF-TOKEN", xsrfFromPage);
+            Console.WriteLine("  Sending login request...");
+            var response = await client.SendAsync(request);
 
-            var loginUrl = $"https://{tenant}.mijndiad.nl/login";
-            var response = await client.PostAsync(loginUrl, content);
-            Console.WriteLine($"  Login response status: {response.StatusCode}");
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"❌ Login request failed with status {response.StatusCode}");
+                return (null, null);
+            }
 
+            // Extract session cookie
             string sessionCookie = null;
-            string xsrfToken = null;
             if (response.Headers.TryGetValues("Set-Cookie", out var cookies))
             {
                 foreach (var cookie in cookies)
                 {
                     if (cookie.Contains($"{tenant}_session="))
+                    {
                         sessionCookie = ExtractCookieValue(cookie, $"{tenant}_session=");
-                    if (cookie.Contains("XSRF-TOKEN="))
-                        xsrfToken = ExtractCookieValue(cookie, "XSRF-TOKEN=");
+                        Console.WriteLine($"  ✓ Got session cookie");
+                    }
                 }
+            }
+
+            if (sessionCookie == null)
+            {
+                Console.WriteLine("❌ Could not find session cookie.");
+                return (null, null);
             }
 
             return (sessionCookie, xsrfToken);
         }
 
+        // -------------------- HELPER FUNCTIONS --------------------
         static string ExtractCookieValue(string cookieHeader, string cookieName)
         {
             int start = cookieHeader.IndexOf(cookieName);
@@ -170,9 +215,9 @@ namespace MijnDiadAutomation
 
             int offset = hash[hash.Length - 1] & 0x0F;
             int binary = ((hash[offset] & 0x7F) << 24) |
-                        ((hash[offset + 1] & 0xFF) << 16) |
-                        ((hash[offset + 2] & 0xFF) << 8) |
-                        (hash[offset + 3] & 0xFF);
+                         ((hash[offset + 1] & 0xFF) << 16) |
+                         ((hash[offset + 2] & 0xFF) << 8) |
+                         (hash[offset + 3] & 0xFF);
 
             int otp = binary % (int)Math.Pow(10, digits);
             return otp.ToString($"D{digits}");
@@ -190,13 +235,15 @@ namespace MijnDiadAutomation
                 bits += Convert.ToString(index, 2).PadLeft(5, '0');
             }
 
-            var bytes = new List<byte>();
+            var bytes = new System.Collections.Generic.List<byte>();
             for (int i = 0; i < bits.Length; i += 8)
             {
                 int length = Math.Min(8, bits.Length - i);
                 string segment = bits.Substring(i, length);
                 if (segment.Length == 8)
+                {
                     bytes.Add(Convert.ToByte(segment, 2));
+                }
             }
 
             return bytes.ToArray();
