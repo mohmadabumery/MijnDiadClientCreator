@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Playwright package for browser automation -->
     <PackageReference Include="Microsoft.Playwright" Version="1.43.0" />
   </ItemGroup>
 
