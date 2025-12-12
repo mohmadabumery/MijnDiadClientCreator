@@ -20,6 +20,11 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Install Playwright
+        run: |
+          dotnet tool install --global Microsoft.Playwright.CLI
+          playwright install
+
       - name: Run MijnDiAd Automation with Auto-Login
         run: |
           dotnet run --project MijnDiadAutomation -- --json '${{ inputs.dynamics_json }}'
