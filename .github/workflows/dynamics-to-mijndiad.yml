@@ -1,4 +1,4 @@
-name: Dynamics → MijnDiAd Automation (Auto-Login)
+name: Dynamics → MijnDiAd Automation
 
 on:
   workflow_dispatch:
@@ -20,15 +20,18 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install Playwright CLI and build project
+      - name: Install Playwright CLI
         run: |
           dotnet tool install --global Microsoft.Playwright.CLI
-          dotnet build ./MijnDiadAutomation/MijnDiadAutomation.csproj
+          export PATH="$PATH:$HOME/.dotnet/tools"
           cd MijnDiadAutomation
+          dotnet add package Microsoft.Playwright
+          dotnet build
           playwright install
 
-      - name: Run MijnDiAd Automation with Auto-Login
+      - name: Run MijnDiAd Automation
         run: |
+          export PATH="$PATH:$HOME/.dotnet/tools"
           dotnet run --project MijnDiadAutomation -- --json '${{ inputs.dynamics_json }}'
         env:
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
