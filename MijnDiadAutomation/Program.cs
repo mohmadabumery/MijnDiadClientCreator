@@ -1,11 +1,11 @@
 using System;
 using System.IO;
-using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using System.Security.Cryptography;
 using Microsoft.Playwright;
+using System.Net.Http;
+using System.Linq;
 
 namespace MijnDiadAutomation
 {
@@ -15,7 +15,7 @@ namespace MijnDiadAutomation
         {
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
-            // Parse input JSON
+            // Parse JSON input
             string dynamicsJson = null;
             if (args.Length == 2 && args[0] == "--json")
             {
@@ -34,7 +34,7 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // Read credentials from environment
+            // Read credentials from GitHub secrets
             string username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
             string password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
             string totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
@@ -46,53 +46,9 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // Step 1: Generate TOTP code
-            string totpCode = null;
-            if (!string.IsNullOrWhiteSpace(totpSecret))
-            {
-                totpCode = GenerateTOTP(totpSecret);
-                Console.WriteLine($"  Generated TOTP code: {totpCode}");
-            }
-
-            // Step 2: Launch Playwright browser to log in and get session cookies
+            // Step 1: Login using Playwright
             Console.WriteLine("\n[Step 1/3] Logging in to MijnDiAd...");
-            using var playwright = await Playwright.CreateAsync();
-            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-            {
-                Headless = true
-            });
-            var context = await browser.NewContextAsync();
-            var page = await context.NewPageAsync();
-
-            // Optional: log all requests for debugging
-            page.Request += (_, request) => Console.WriteLine($"Request: {request.Url}");
-
-            // Navigate to login page
-            var loginUrl = $"https://{tenant}.mijndiad.nl/login";
-            await page.GotoAsync(loginUrl);
-
-            // Fill login form
-            await page.FillAsync("input[name=email]", username);
-            await page.FillAsync("input[name=password]", password);
-
-            if (!string.IsNullOrEmpty(totpCode))
-            {
-                await page.FillAsync("input[name=totp]", totpCode);
-            }
-
-            await page.ClickAsync("button[type=submit]");
-
-            // Wait for navigation to ensure login succeeded
-            await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
-
-            // Extract cookies
-            var cookies = await context.CookiesAsync();
-            string sessionCookie = null, xsrfToken = null;
-            foreach (var cookie in cookies)
-            {
-                if (cookie.Name == $"{tenant}_session") sessionCookie = cookie.Value;
-                if (cookie.Name == "XSRF-TOKEN") xsrfToken = cookie.Value;
-            }
+            var (sessionCookie, xsrfToken) = await LoginToMijnDiad(username, password, totpSecret, tenant);
 
             if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
             {
@@ -102,7 +58,7 @@ namespace MijnDiadAutomation
 
             Console.WriteLine("✓ Login successful! Got fresh session cookies.");
 
-            // Step 3: Post client data to MijnDiAd API
+            // Step 2: Post client data to MijnDiAd API
             Console.WriteLine("\n[Step 2/3] Creating client in MijnDiAd...");
             using var client = new HttpClient();
             client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
@@ -120,23 +76,58 @@ namespace MijnDiadAutomation
                 Console.WriteLine(result);
 
                 if (response.IsSuccessStatusCode)
-                {
                     Console.WriteLine("\n✓✓✓ SUCCESS! Client created in MijnDiAd EPD ✓✓✓");
-                }
                 else
-                {
                     Console.WriteLine($"\n❌ Failed to create client. Status: {response.StatusCode}");
-                    Environment.Exit(1);
-                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error sending request: {ex.Message}");
-                Environment.Exit(1);
             }
         }
 
-        // Generate TOTP
+        // ---------------- Playwright Login ----------------
+        static async Task<(string sessionCookie, string xsrfToken)> LoginToMijnDiad(string username, string password, string totpSecret, string tenant)
+        {
+            using var playwright = await Playwright.CreateAsync();
+            var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+            var context = await browser.NewContextAsync();
+            context.SetDefaultTimeout(60000); // 60s timeout
+            var page = await context.NewPageAsync();
+
+            string loginUrl = $"https://{tenant}.mijndiad.nl/login";
+            Console.WriteLine($"Navigating to login page: {loginUrl}");
+            await page.GotoAsync(loginUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+
+            // Optional: take screenshot for debugging
+            await page.ScreenshotAsync(new PageScreenshotOptions { Path = "login_page.png" });
+
+            // Fill login fields
+            await page.FillAsync("input[name=email]", username);
+            await page.FillAsync("input[name=password]", password);
+
+            if (!string.IsNullOrEmpty(totpSecret))
+            {
+                string totpCode = GenerateTOTP(totpSecret);
+                Console.WriteLine($"Generated TOTP: {totpCode}");
+                await page.FillAsync("input[name=totp]", totpCode);
+            }
+
+            await page.ClickAsync("button[type=submit]");
+            await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+
+            // Optional: screenshot after login
+            await page.ScreenshotAsync(new PageScreenshotOptions { Path = "after_login.png" });
+
+            var cookies = await context.CookiesAsync();
+            string sessionCookie = cookies.FirstOrDefault(c => c.Name == $"{tenant}_session")?.Value;
+            string xsrfToken = cookies.FirstOrDefault(c => c.Name == "XSRF-TOKEN")?.Value;
+
+            await browser.CloseAsync();
+            return (sessionCookie, xsrfToken);
+        }
+
+        // ---------------- TOTP Generator ----------------
         static string GenerateTOTP(string base32Secret, int digits = 6, int period = 30)
         {
             byte[] secretBytes = Base32Decode(base32Secret);
@@ -150,7 +141,7 @@ namespace MijnDiadAutomation
                 counter >>= 8;
             }
 
-            using var hmac = new HMACSHA1(secretBytes);
+            using var hmac = new System.Security.Cryptography.HMACSHA1(secretBytes);
             byte[] hash = hmac.ComputeHash(counterBytes);
 
             int offset = hash[hash.Length - 1] & 0x0F;
@@ -181,9 +172,7 @@ namespace MijnDiadAutomation
                 int length = Math.Min(8, bits.Length - i);
                 string segment = bits.Substring(i, length);
                 if (segment.Length == 8)
-                {
                     bytes.Add(Convert.ToByte(segment, 2));
-                }
             }
 
             return bytes.ToArray();
