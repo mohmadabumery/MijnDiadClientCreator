@@ -1,10 +1,11 @@
 using System;
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
 using Microsoft.Playwright;
-using System.Net.Http;
 using System.Linq;
 
 namespace MijnDiadAutomation
@@ -15,7 +16,7 @@ namespace MijnDiadAutomation
         {
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
-            // Parse JSON input
+            // Parse input JSON
             string dynamicsJson = null;
             if (args.Length == 2 && args[0] == "--json")
             {
@@ -34,7 +35,7 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // Read credentials from GitHub secrets
+            // Read credentials from environment
             string username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
             string password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
             string totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
@@ -49,13 +50,6 @@ namespace MijnDiadAutomation
             // Step 1: Login using Playwright
             Console.WriteLine("\n[Step 1/3] Logging in to MijnDiAd...");
             var (sessionCookie, xsrfToken) = await LoginToMijnDiad(username, password, totpSecret, tenant);
-
-            if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
-            {
-                Console.WriteLine("❌ Login failed. Could not retrieve session cookies.");
-                return;
-            }
-
             Console.WriteLine("✓ Login successful! Got fresh session cookies.");
 
             // Step 2: Post client data to MijnDiAd API
@@ -76,61 +70,76 @@ namespace MijnDiadAutomation
                 Console.WriteLine(result);
 
                 if (response.IsSuccessStatusCode)
+                {
                     Console.WriteLine("\n✓✓✓ SUCCESS! Client created in MijnDiAd EPD ✓✓✓");
+                }
                 else
+                {
                     Console.WriteLine($"\n❌ Failed to create client. Status: {response.StatusCode}");
+                    Environment.Exit(1);
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ Error sending request: {ex.Message}");
+                Environment.Exit(1);
             }
         }
 
-        // ---------------- Playwright Login ----------------
         static async Task<(string sessionCookie, string xsrfToken)> LoginToMijnDiad(string username, string password, string totpSecret, string tenant)
         {
             using var playwright = await Playwright.CreateAsync();
-            var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
-            var context = await browser.NewContextAsync();
-            context.SetDefaultTimeout(60000); // 60s timeout
-            var page = await context.NewPageAsync();
+            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            {
+                Headless = true
+            });
 
+            var context = await browser.NewContextAsync();
+            string sessionCookie = null;
+            string xsrfToken = null;
+
+            var page = await context.NewPageAsync();
             string loginUrl = $"https://{tenant}.mijndiad.nl/login";
             Console.WriteLine($"Navigating to login page: {loginUrl}");
-            await page.GotoAsync(loginUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
 
-            // Optional: take screenshot for debugging
-            await page.ScreenshotAsync(new PageScreenshotOptions { Path = "login_page.png" });
+            await page.GotoAsync(loginUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 120000 });
+            await page.WaitForSelectorAsync("input[type='email'], input[name='email'], input[id*='email']", new PageWaitForSelectorOptions { Timeout = 120000 });
 
-            // Fill login fields
-            await page.FillAsync("input[name=email]", username);
-            await page.FillAsync("input[name=password]", password);
+            // Fill in credentials
+            await page.FillAsync("input[type='email'], input[name='email'], input[id*='email']", username);
+            await page.FillAsync("input[type='password'], input[name='password'], input[id*='password']", password);
 
-            if (!string.IsNullOrEmpty(totpSecret))
+            // Fill TOTP if available
+            if (!string.IsNullOrWhiteSpace(totpSecret))
             {
                 string totpCode = GenerateTOTP(totpSecret);
-                Console.WriteLine($"Generated TOTP: {totpCode}");
-                await page.FillAsync("input[name=totp]", totpCode);
+                Console.WriteLine($"Generated TOTP code: {totpCode}");
+                await page.FillAsync("input[name='totp'], input[id*='totp']", totpCode);
             }
 
-            await page.ClickAsync("button[type=submit]");
-            await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+            await page.ClickAsync("button[type='submit'], button[id*='login'], input[type='submit']");
+            await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new PageWaitForLoadStateOptions { Timeout = 120000 });
 
-            // Optional: screenshot after login
-            await page.ScreenshotAsync(new PageScreenshotOptions { Path = "after_login.png" });
-
+            // Extract cookies
             var cookies = await context.CookiesAsync();
-            string sessionCookie = cookies.FirstOrDefault(c => c.Name == $"{tenant}_session")?.Value;
-            string xsrfToken = cookies.FirstOrDefault(c => c.Name == "XSRF-TOKEN")?.Value;
+            foreach (var cookie in cookies)
+            {
+                if (cookie.Name.Contains("_session"))
+                    sessionCookie = cookie.Value;
+                if (cookie.Name.Contains("XSRF-TOKEN"))
+                    xsrfToken = cookie.Value;
+            }
 
-            await browser.CloseAsync();
+            if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
+                throw new Exception("❌ Login failed: could not retrieve session cookies.");
+
             return (sessionCookie, xsrfToken);
         }
 
-        // ---------------- TOTP Generator ----------------
         static string GenerateTOTP(string base32Secret, int digits = 6, int period = 30)
         {
             byte[] secretBytes = Base32Decode(base32Secret);
+
             long epoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             long counter = epoch / period;
 
@@ -141,7 +150,7 @@ namespace MijnDiadAutomation
                 counter >>= 8;
             }
 
-            using var hmac = new System.Security.Cryptography.HMACSHA1(secretBytes);
+            using var hmac = new HMACSHA1(secretBytes);
             byte[] hash = hmac.ComputeHash(counterBytes);
 
             int offset = hash[hash.Length - 1] & 0x0F;
