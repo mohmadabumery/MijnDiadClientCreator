@@ -1,52 +1,48 @@
-name: Dynamics → MijnDiAd Automation (Auto-Login)
+name: MijnDiAd Client Creator
 
 on:
   workflow_dispatch:
     inputs:
-      dynamics_json:
-        description: "JSON payload from Power Automate"
+      clientData:
+        description: 'JSON input for client creation'
         required: true
-        type: string
+        default: '{}'
 
 jobs:
-  run-automation:
+  build-and-run:
     runs-on: ubuntu-latest
+
+    env:
+      DOTNET_ROOT: /usr/share/dotnet
+      MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
+      MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
+      MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+      MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup .NET
+      - name: Setup .NET 8
         uses: actions/setup-dotnet@v3
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: 8.0.x
 
-      - name: Add Playwright package to project
-        run: |
-          dotnet add MijnDiadAutomation package Microsoft.Playwright --version 1.43.0
-          dotnet restore MijnDiadAutomation
-          dotnet build MijnDiadAutomation
+      - name: Install Playwright .NET package
+        run: dotnet add MijnDiadAutomation package Microsoft.Playwright --version 1.43.0
 
-      - name: Install Playwright CLI and Browsers
+      - name: Restore and build project
         run: |
-          dotnet tool install --global Microsoft.Playwright.CLI --version 1.2.3
-          export PATH="$PATH:/home/runner/.dotnet/tools"
+          dotnet restore MijnDiadAutomation/MijnDiadAutomation.csproj
+          dotnet build MijnDiadAutomation/MijnDiadAutomation.csproj
+
+      - name: Install Playwright browsers
+        run: |
+          dotnet tool install --global Microsoft.Playwright.CLI
+          export PATH="$PATH:$HOME/.dotnet/tools"
           playwright install
 
-      - name: Run MijnDiAd Automation with Auto-Login
+      - name: Run MijnDiAd Automation
         run: |
-          dotnet run --project MijnDiadAutomation -- --json '${{ inputs.dynamics_json }}'
-        env:
-          MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
-          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-
-      - name: Workflow Summary
-        if: always()
-        run: |
-          if [ $? -eq 0 ]; then
-            echo "✓ Client successfully created in MijnDiAd EPD"
-          else
-            echo "❌ Failed to create client - check logs above"
-          fi
+          dotnet run --project MijnDiadAutomation \
+            -- --json '${{ github.event.inputs.clientData }}'
