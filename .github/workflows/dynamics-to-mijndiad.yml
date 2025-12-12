@@ -20,10 +20,12 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install Playwright
+      - name: Install and setup Playwright
         run: |
           dotnet tool install --global Microsoft.Playwright.CLI
           cd MijnDiadAutomation
+          dotnet restore
+          dotnet build
           playwright install
 
       - name: Run MijnDiAd Automation with Auto-Login
