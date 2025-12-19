@@ -5,6 +5,10 @@ on:
     paths:
       - 'pending/*.json'
   workflow_dispatch:
+    inputs:
+      dynamics_json:
+        description: 'Dynamics JSON content from Power Automate'
+        required: true
 
 jobs:
   run-automation:
@@ -17,22 +21,21 @@ jobs:
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
-      
-      - name: Process pending client files
+
+      - name: Save Dynamics JSON input to file
         run: |
-          for file in pending/*.json; do
-            if [ -f "$file" ]; then
-              echo "Processing $file"
-              dotnet run --project MijnDiadAutomation "$file"
-            fi
-          done
+          mkdir -p pending
+          echo '${{ github.event.inputs.dynamics_json }}' > pending/temp.json
+
+      - name: Process pending client file
+        run: dotnet run --project MijnDiadAutomation "pending/temp.json"
         env:
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
           MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
           MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-      
-      - name: Commit processed files cleanup
+
+      - name: Cleanup processed files
         if: always()
         run: |
           git config user.name "GitHub Actions"
