@@ -53,7 +53,7 @@ class Program
         // Submit the login form
         await page.ClickAsync("button[type=submit]");
 
-        // Wait for navigation to dashboard / some element that indicates login success
+        // Wait for dashboard element to appear (login success)
         await page.WaitForSelectorAsync("text=Dashboard", new PageWaitForSelectorOptions { Timeout = 15000 });
         Console.WriteLine("✓ Logged in successfully!");
 
@@ -74,7 +74,7 @@ class Program
 
         Console.WriteLine("[3/3] Creating client via API...");
 
-        // Use page.EvaluateAsync to POST client JSON with correct headers
+        // Post client JSON via browser context (headers + cookies)
         string script = @$"
             fetch('https://{tenant}.mijndiad.nl/api/clients', {{
                 method: 'POST',
@@ -92,7 +92,7 @@ class Program
 
         Console.WriteLine("✓ Client creation attempted");
 
-        // Delete the processed file
+        // Delete processed file
         File.Delete(jsonPath);
         Console.WriteLine($"✓ Cleaned up file: {jsonPath}");
     }
