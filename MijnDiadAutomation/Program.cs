@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Playwright;
+await Playwright.InstallAsync(); // installs browsers automatically
 
 class Program
 {
