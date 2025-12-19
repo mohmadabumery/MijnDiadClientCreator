@@ -1,11 +1,11 @@
 using System;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Security.Cryptography;
-using System.Linq;
 
 namespace MijnDiadAutomation
 {
@@ -42,40 +42,76 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // Step 1: Get initial session cookies from login page
+            // Setup HttpClient with CookieContainer to handle session automatically
+            var cookieContainer = new CookieContainer();
+            var handler = new HttpClientHandler { CookieContainer = cookieContainer, UseCookies = true };
+            using var client = new HttpClient(handler);
+
+            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+            client.DefaultRequestHeaders.Add("Accept", "application/json");
+
+            // Step 1: GET /login to get initial session cookies
             Console.WriteLine("\n[1/4] Fetching initial session cookies...");
-            var (initialSessionCookie, initialXsrfToken) = await GetInitialSessionCookies(tenant);
+            var getResponse = await client.GetAsync($"https://{tenant}.mijndiad.nl/login");
+            getResponse.EnsureSuccessStatusCode();
+
+            // Extract initial cookies
+            var cookies = cookieContainer.GetCookies(new Uri($"https://{tenant}.mijndiad.nl/"));
+            string initialSessionCookie = cookies[$"{tenant}_session"]?.Value;
+            string initialXsrfToken = cookies["XSRF-TOKEN"]?.Value;
 
             if (string.IsNullOrEmpty(initialSessionCookie) || string.IsNullOrEmpty(initialXsrfToken))
             {
-                Console.WriteLine("❌ Failed to get initial cookies from login page.");
+                Console.WriteLine("❌ Failed to get initial cookies.");
                 return;
             }
 
-            // Step 2: Login and get authenticated session cookies
+            // Step 2: POST /login with credentials + TOTP
             Console.WriteLine("\n[2/4] Logging in to MijnDiAd...");
-            var (sessionCookie, xsrfToken) = await LoginToMijnDiad(username, password, totpSecret, tenant, initialSessionCookie, initialXsrfToken);
+            string totpCode = GenerateTOTP(totpSecret);
+            Console.WriteLine($"Generated TOTP: {totpCode}");
+
+            var loginData = new
+            {
+                email = username,
+                password = password,
+                totp_code = totpCode,
+                tenant = tenant
+            };
+            var loginJson = JsonSerializer.Serialize(loginData);
+            var loginContent = new StringContent(loginJson, Encoding.UTF8, "application/json");
+
+            var loginRequest = new HttpRequestMessage(HttpMethod.Post, $"https://{tenant}.mijndiad.nl/login");
+            loginRequest.Content = loginContent;
+            loginRequest.Headers.Add("Referer", $"https://{tenant}.mijndiad.nl/login");
+
+            var loginResponse = await client.SendAsync(loginRequest);
+            loginResponse.EnsureSuccessStatusCode();
+
+            // Step 3: Extract authenticated session cookies
+            cookies = cookieContainer.GetCookies(new Uri($"https://{tenant}.mijndiad.nl/"));
+            string sessionCookie = cookies[$"{tenant}_session"]?.Value;
+            string xsrfToken = cookies["XSRF-TOKEN"]?.Value;
 
             if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
             {
-                Console.WriteLine("❌ Login failed. Could not retrieve session cookies.");
+                Console.WriteLine("❌ Login failed. Could not retrieve authenticated session cookies.");
                 return;
             }
 
             Console.WriteLine("✓ Login successful!");
 
-            // Step 3: Post client data to MijnDiAd API
+            // Step 4: Post Dynamics JSON to MijnDiAd API
             Console.WriteLine("\n[3/4] Creating client in MijnDiAd...");
-            using var client = new HttpClient();
+            client.DefaultRequestHeaders.Remove("Accept");
             client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
-            client.DefaultRequestHeaders.Add("Cookie", $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
 
             var content = new StringContent(dynamicsJson, Encoding.UTF8, "application/json");
-            var url = $"https://{tenant}.mijndiad.nl/api/clients";
+            var apiUrl = $"https://{tenant}.mijndiad.nl/api/clients";
 
             try
             {
-                var response = await client.PostAsync(url, content);
+                var response = await client.PostAsync(apiUrl, content);
                 var result = await response.Content.ReadAsStringAsync();
 
                 Console.WriteLine("\n[4/4] MijnDiAd Response:");
@@ -84,8 +120,6 @@ namespace MijnDiadAutomation
                 if (response.IsSuccessStatusCode)
                 {
                     Console.WriteLine("\n✓ Client created successfully!");
-
-                    // Clean up processed file
                     File.Delete(jsonFilePath);
                     Console.WriteLine($"✓ Cleaned up: {jsonFilePath}");
                 }
@@ -100,106 +134,10 @@ namespace MijnDiadAutomation
             }
         }
 
-        // New method: GET login page to retrieve initial cookies
-        static async Task<(string sessionCookie, string xsrfToken)> GetInitialSessionCookies(string tenant)
-        {
-            using var client = new HttpClient();
-            var response = await client.GetAsync($"https://{tenant}.mijndiad.nl/login");
-
-            if (response.Headers.TryGetValues("Set-Cookie", out var cookies))
-            {
-                string sessionCookie = null;
-                string xsrfToken = null;
-
-                foreach (var cookie in cookies)
-                {
-                    if (cookie.Contains($"{tenant}_session="))
-                        sessionCookie = ExtractCookieValue(cookie, $"{tenant}_session=");
-                    if (cookie.Contains("XSRF-TOKEN="))
-                        xsrfToken = ExtractCookieValue(cookie, "XSRF-TOKEN=");
-                }
-
-                return (sessionCookie, xsrfToken);
-            }
-
-            return (null, null);
-        }
-
-        static async Task<(string sessionCookie, string xsrfToken)> LoginToMijnDiad(
-            string username,
-            string password,
-            string totpSecret,
-            string tenant,
-            string initialSessionCookie,
-            string initialXsrfToken)
-        {
-            using var client = new HttpClient();
-
-            // Generate TOTP code
-            string totpCode = GenerateTOTP(totpSecret);
-            Console.WriteLine($"Generated TOTP: {totpCode}");
-
-            var loginData = new
-            {
-                email = username,
-                password = password,
-                totp_code = totpCode,
-                tenant = tenant
-            };
-
-            var loginJson = JsonSerializer.Serialize(loginData);
-            var content = new StringContent(loginJson, Encoding.UTF8, "application/json");
-
-            var request = new HttpRequestMessage(HttpMethod.Post, $"https://{tenant}.mijndiad.nl/login");
-            request.Content = content;
-            request.Headers.Add("Cookie", $"{tenant}_session={initialSessionCookie}; XSRF-TOKEN={initialXsrfToken}");
-
-            try
-            {
-                var response = await client.SendAsync(request);
-
-                if (response.Headers.TryGetValues("Set-Cookie", out var cookies))
-                {
-                    string sessionCookie = null;
-                    string xsrfToken = null;
-
-                    foreach (var cookie in cookies)
-                    {
-                        if (cookie.Contains($"{tenant}_session="))
-                            sessionCookie = ExtractCookieValue(cookie, $"{tenant}_session=");
-                        if (cookie.Contains("XSRF-TOKEN="))
-                            xsrfToken = ExtractCookieValue(cookie, "XSRF-TOKEN=");
-                    }
-
-                    return (sessionCookie, xsrfToken);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Login error: {ex.Message}");
-            }
-
-            return (null, null);
-        }
-
-        static string ExtractCookieValue(string cookieHeader, string cookieName)
-        {
-            int start = cookieHeader.IndexOf(cookieName);
-            if (start == -1) return null;
-
-            start += cookieName.Length;
-            int end = cookieHeader.IndexOf(';', start);
-            if (end == -1) end = cookieHeader.Length;
-
-            return cookieHeader.Substring(start, end - start);
-        }
-
         static string GenerateTOTP(string base32Secret, int digits = 6, int period = 30)
         {
             byte[] secretBytes = Base32Decode(base32Secret);
-
-            long epoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            long counter = epoch / period;
+            long counter = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / period;
 
             byte[] counterBytes = new byte[8];
             for (int i = 7; i >= 0; i--)
@@ -236,11 +174,9 @@ namespace MijnDiadAutomation
             var bytes = new System.Collections.Generic.List<byte>();
             for (int i = 0; i < bits.Length; i += 8)
             {
-                int length = Math.Min(8, bits.Length - i);
-                string segment = bits.Substring(i, length);
-                if (segment.Length == 8)
+                if (i + 8 <= bits.Length)
                 {
-                    bytes.Add(Convert.ToByte(segment, 2));
+                    bytes.Add(Convert.ToByte(bits.Substring(i, 8), 2));
                 }
             }
 
