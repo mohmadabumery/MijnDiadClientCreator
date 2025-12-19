@@ -63,14 +63,16 @@ class Program
             Encoding.UTF8,
             "application/json"
         );
-        loginRequest.Headers.Add("X-CSRF-TOKEN", WebUtility.UrlDecode(xsrf));
+        loginRequest.Headers.Add("X-CSRF-TOKEN", xsrf); // ✅ Send raw token
         loginRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
 
         var loginResponse = await client.SendAsync(loginRequest);
+        string loginBody = await loginResponse.Content.ReadAsStringAsync();
+
         if (!loginResponse.IsSuccessStatusCode)
         {
             Console.WriteLine($"❌ Login failed: {loginResponse.StatusCode}");
-            Console.WriteLine(await loginResponse.Content.ReadAsStringAsync());
+            Console.WriteLine(loginBody);
             return;
         }
 
@@ -81,7 +83,7 @@ class Program
 
         var createRequest = new HttpRequestMessage(HttpMethod.Post, "/api/clients");
         createRequest.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-        createRequest.Headers.Add("X-CSRF-TOKEN", WebUtility.UrlDecode(xsrf));
+        createRequest.Headers.Add("X-CSRF-TOKEN", xsrf); // ✅ raw token again
         createRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
 
         var createResponse = await client.SendAsync(createRequest);
