@@ -42,20 +42,24 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // Setup HttpClient with CookieContainer to handle session automatically
+            // Setup HttpClient with CookieContainer to handle cookies automatically
             var cookieContainer = new CookieContainer();
-            var handler = new HttpClientHandler { CookieContainer = cookieContainer, UseCookies = true };
-            using var client = new HttpClient(handler);
+            var handler = new HttpClientHandler
+            {
+                CookieContainer = cookieContainer,
+                UseCookies = true,
+                AllowAutoRedirect = true
+            };
 
+            using var client = new HttpClient(handler);
             client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
-            client.DefaultRequestHeaders.Add("Accept", "application/json");
 
             // Step 1: GET /login to get initial session cookies
-            Console.WriteLine("\n[1/4] Fetching initial session cookies...");
+            Console.WriteLine("\n[1/5] Fetching initial session cookies...");
             var getResponse = await client.GetAsync($"https://{tenant}.mijndiad.nl/login");
             getResponse.EnsureSuccessStatusCode();
 
-            // Extract initial cookies
+            // Extract cookies
             var cookies = cookieContainer.GetCookies(new Uri($"https://{tenant}.mijndiad.nl/"));
             string initialSessionCookie = cookies[$"{tenant}_session"]?.Value;
             string initialXsrfToken = cookies["XSRF-TOKEN"]?.Value;
@@ -66,11 +70,15 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // Step 2: POST /login with credentials + TOTP
-            Console.WriteLine("\n[2/4] Logging in to MijnDiAd...");
-            string totpCode = GenerateTOTP(totpSecret);
-            Console.WriteLine($"Generated TOTP: {totpCode}");
+            Console.WriteLine($"Initial session: {initialSessionCookie}");
+            Console.WriteLine($"Initial XSRF: {initialXsrfToken}");
 
+            // Step 2: Generate TOTP
+            string totpCode = GenerateTOTP(totpSecret);
+            Console.WriteLine($"\n[2/5] Generated TOTP: {totpCode}");
+
+            // Step 3: POST /login with credentials + cookies + TOTP
+            Console.WriteLine("\n[3/5] Logging in to MijnDiAd...");
             var loginData = new
             {
                 email = username,
@@ -84,11 +92,16 @@ namespace MijnDiadAutomation
             var loginRequest = new HttpRequestMessage(HttpMethod.Post, $"https://{tenant}.mijndiad.nl/login");
             loginRequest.Content = loginContent;
             loginRequest.Headers.Add("Referer", $"https://{tenant}.mijndiad.nl/login");
+            loginRequest.Headers.Add("Accept", "application/json");
 
             var loginResponse = await client.SendAsync(loginRequest);
-            loginResponse.EnsureSuccessStatusCode();
+            if (!loginResponse.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"❌ Login POST failed: {loginResponse.StatusCode}");
+                return;
+            }
 
-            // Step 3: Extract authenticated session cookies
+            // Step 4: Extract authenticated session cookies
             cookies = cookieContainer.GetCookies(new Uri($"https://{tenant}.mijndiad.nl/"));
             string sessionCookie = cookies[$"{tenant}_session"]?.Value;
             string xsrfToken = cookies["XSRF-TOKEN"]?.Value;
@@ -101,8 +114,9 @@ namespace MijnDiadAutomation
 
             Console.WriteLine("✓ Login successful!");
 
-            // Step 4: Post Dynamics JSON to MijnDiAd API
-            Console.WriteLine("\n[3/4] Creating client in MijnDiAd...");
+            // Step 5: Post Dynamics JSON to MijnDiAd API
+            Console.WriteLine("\n[4/5] Sending Dynamics JSON to MijnDiAd API...");
+            client.DefaultRequestHeaders.Remove("User-Agent");
             client.DefaultRequestHeaders.Remove("Accept");
             client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
 
@@ -114,7 +128,7 @@ namespace MijnDiadAutomation
                 var response = await client.PostAsync(apiUrl, content);
                 var result = await response.Content.ReadAsStringAsync();
 
-                Console.WriteLine("\n[4/4] MijnDiAd Response:");
+                Console.WriteLine("\n[5/5] MijnDiAd Response:");
                 Console.WriteLine(result);
 
                 if (response.IsSuccessStatusCode)
@@ -172,12 +186,9 @@ namespace MijnDiadAutomation
             }
 
             var bytes = new System.Collections.Generic.List<byte>();
-            for (int i = 0; i < bits.Length; i += 8)
+            for (int i = 0; i + 8 <= bits.Length; i += 8)
             {
-                if (i + 8 <= bits.Length)
-                {
-                    bytes.Add(Convert.ToByte(bits.Substring(i, 8), 2));
-                }
+                bytes.Add(Convert.ToByte(bits.Substring(i, 8), 2));
             }
 
             return bytes.ToArray();
