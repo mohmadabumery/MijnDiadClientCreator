@@ -1,46 +1,45 @@
-name: Dynamics → MijnDiAd Automation
+name: Dynamics → MijnDiAd Automation (Auto-Login)
 
 on:
-  workflow_dispatch: # manual trigger
-  # or when files are added
   push:
     paths:
       - 'pending/*.json'
+  workflow_dispatch:
+    inputs:
+      dynamics_json:
+        description: 'Dynamics JSON content from Power Automate'
+        required: true
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-
     steps:
-      # 1️⃣ Checkout repository
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
-
-      # 2️⃣ Setup .NET
+      
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
 
-      # 3️⃣ Install Playwright and browsers
-      - name: Install Playwright
+      - name: Save Dynamics JSON input to file
         run: |
-          dotnet tool install --global Microsoft.Playwright.CLI
-          export PATH="$PATH:$HOME/.dotnet/tools"
-          playwright install chromium
-          
-      # 4️⃣ Run the automation for each pending JSON file
-      - name: Process pending client files
-        run: |
-          export PATH="$PATH:$HOME/.dotnet/tools"
-          for file in pending/*.json; do
-            if [ -f "$file" ]; then
-              echo "Processing $file"
-              dotnet run --project MijnDiadAutomation "$file"
-            fi
-          done
+          mkdir -p pending
+          echo '${{ github.event.inputs.dynamics_json }}' > pending/temp.json
+
+      - name: Process pending client file
+        run: dotnet run --project MijnDiadAutomation "pending/temp.json"
         env:
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
           MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
           MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+
+      - name: Cleanup processed files
+        if: always()
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git diff --quiet && git diff --staged --quiet || git commit -m "Cleanup processed client files"
+          git push
