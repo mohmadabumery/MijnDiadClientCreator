@@ -1,32 +1,24 @@
-name: Dynamics → MijnDiAd Automation (Auto-Login)
+name: Dynamics → MijnDiAd Automation
 
 on:
-  workflow_dispatch: # manual trigger
-  # or use your existing Power Automate trigger to call workflow_dispatch
+  workflow_dispatch:
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
+
     steps:
-      # Step 1: Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Step 2: Setup .NET
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
 
-      # Step 3: Restore NuGet packages
       - name: Restore NuGet packages
         run: dotnet restore MijnDiadAutomation/MijnDiadAutomation.csproj
 
-      # Step 4: Install Playwright browsers
-      - name: Install Playwright browsers
-        run: dotnet tool run playwright install
-
-      # Step 5: Run the automation script
       - name: Run MijnDiAd Automation
         run: dotnet run --project MijnDiadAutomation "pending/temp.json"
         env:
@@ -35,7 +27,6 @@ jobs:
           MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
 
-      # Step 6: Optional cleanup commit if needed
       - name: Commit processed files cleanup
         if: always()
         run: |
