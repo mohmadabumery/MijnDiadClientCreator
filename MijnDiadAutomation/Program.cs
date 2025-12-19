@@ -1,11 +1,8 @@
 using System;
 using System.IO;
-using System.Net;
-using System.Net.Http;
-using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using System.Security.Cryptography;
+using Microsoft.Playwright;
 
 class Program
 {
@@ -22,103 +19,101 @@ class Program
         string password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
         string totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
 
-        var cookies = new CookieContainer();
-        var handler = new HttpClientHandler
+        string jsonPath = args[0];
+        if (!File.Exists(jsonPath))
         {
-            CookieContainer = cookies,
-            UseCookies = true,
-            AutomaticDecompression = DecompressionMethods.All
-        };
-
-        using var client = new HttpClient(handler);
-        client.BaseAddress = new Uri($"https://{tenant}.mijndiad.nl");
-        client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
-        client.DefaultRequestHeaders.Add("Accept", "application/json");
-
-        Console.WriteLine("[1/4] Fetching session...");
-        await client.GetAsync("/login");
-
-        string xsrf = cookies
-            .GetCookies(new Uri(client.BaseAddress.ToString()))["XSRF-TOKEN"]?.Value;
-
-        if (xsrf == null)
-        {
-            Console.WriteLine("❌ No XSRF token received");
+            Console.WriteLine($"File not found: {jsonPath}");
             return;
         }
 
-        Console.WriteLine("[2/4] Logging in...");
+        string clientJson = await File.ReadAllTextAsync(jsonPath);
 
-        var loginPayload = new
+        Console.WriteLine("Launching headless browser...");
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
-            email = username,
-            password = password,
-            totp_code = GenerateTOTP(totpSecret),
-            tenant = tenant
-        };
+            Headless = true
+        });
 
-        var loginRequest = new HttpRequestMessage(HttpMethod.Post, "/api/login");
-        loginRequest.Content = new StringContent(
-            JsonSerializer.Serialize(loginPayload),
-            Encoding.UTF8,
-            "application/json"
-        );
-        loginRequest.Headers.Add("X-CSRF-TOKEN", xsrf); // ✅ Send raw token
-        loginRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        var context = await browser.NewContextAsync();
+        var page = await context.NewPageAsync();
 
-        var loginResponse = await client.SendAsync(loginRequest);
-        string loginBody = await loginResponse.Content.ReadAsStringAsync();
+        Console.WriteLine("[1/3] Navigating to login page...");
+        await page.GotoAsync($"https://{tenant}.mijndiad.nl/login");
 
-        if (!loginResponse.IsSuccessStatusCode)
+        // Fill login form
+        Console.WriteLine("[2/3] Logging in...");
+        await page.FillAsync("input[name=email]", username);
+        await page.FillAsync("input[name=password]", password);
+
+        // Generate TOTP code dynamically
+        string totp = GenerateTOTP(totpSecret);
+        await page.FillAsync("input[name=totp_code]", totp);
+
+        // Submit the login form
+        await page.ClickAsync("button[type=submit]");
+
+        // Wait for navigation to dashboard / some element that indicates login success
+        await page.WaitForSelectorAsync("text=Dashboard", new PageWaitForSelectorOptions { Timeout = 15000 });
+        Console.WriteLine("✓ Logged in successfully!");
+
+        // Get cookies for API
+        var cookies = await context.CookiesAsync();
+        string xsrf = null, session = null;
+        foreach (var c in cookies)
         {
-            Console.WriteLine($"❌ Login failed: {loginResponse.StatusCode}");
-            Console.WriteLine(loginBody);
+            if (c.Name == "XSRF-TOKEN") xsrf = c.Value;
+            if (c.Name.EndsWith("_session")) session = c.Value;
+        }
+
+        if (string.IsNullOrEmpty(xsrf) || string.IsNullOrEmpty(session))
+        {
+            Console.WriteLine("❌ Failed to get session cookies");
             return;
         }
 
-        Console.WriteLine("✓ Logged in");
+        Console.WriteLine("[3/3] Creating client via API...");
 
-        Console.WriteLine("[3/4] Creating client...");
-        string jsonBody = await File.ReadAllTextAsync(args[0]);
+        // Use page.EvaluateAsync to POST client JSON with correct headers
+        string script = @$"
+            fetch('https://{tenant}.mijndiad.nl/api/clients', {{
+                method: 'POST',
+                headers: {{
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{xsrf}',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }},
+                body: JSON.stringify({clientJson})
+            }})
+            .then(r => r.json())";
 
-        var createRequest = new HttpRequestMessage(HttpMethod.Post, "/api/clients");
-        createRequest.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-        createRequest.Headers.Add("X-CSRF-TOKEN", xsrf); // ✅ raw token again
-        createRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        var result = await page.EvaluateAsync<JsonElement>(script);
+        Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
 
-        var createResponse = await client.SendAsync(createRequest);
-        string responseBody = await createResponse.Content.ReadAsStringAsync();
+        Console.WriteLine("✓ Client creation attempted");
 
-        Console.WriteLine($"Status: {createResponse.StatusCode}");
-        Console.WriteLine(responseBody);
-
-        if (!createResponse.IsSuccessStatusCode)
-        {
-            Console.WriteLine("❌ Client NOT created");
-            return;
-        }
-
-        Console.WriteLine("✓ Client created successfully");
-        File.Delete(args[0]);
+        // Delete the processed file
+        File.Delete(jsonPath);
+        Console.WriteLine($"✓ Cleaned up file: {jsonPath}");
     }
 
     static string GenerateTOTP(string base32)
     {
+        const int digits = 6;
         byte[] key = Base32Decode(base32);
         long timestep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
-        byte[] data = BitConverter.GetBytes(IPAddress.HostToNetworkOrder(timestep));
+        byte[] data = BitConverter.GetBytes(System.Net.IPAddress.HostToNetworkOrder(timestep));
 
-        using var hmac = new HMACSHA1(key);
+        using var hmac = new System.Security.Cryptography.HMACSHA1(key);
         byte[] hash = hmac.ComputeHash(data);
 
         int offset = hash[^1] & 0x0F;
-        int binary =
-            ((hash[offset] & 0x7F) << 24) |
-            ((hash[offset + 1] & 0xFF) << 16) |
-            ((hash[offset + 2] & 0xFF) << 8) |
-            (hash[offset + 3] & 0xFF);
+        int binary = ((hash[offset] & 0x7F) << 24) |
+                     ((hash[offset + 1] & 0xFF) << 16) |
+                     ((hash[offset + 2] & 0xFF) << 8) |
+                     (hash[offset + 3] & 0xFF);
 
-        return (binary % 1_000_000).ToString("D6");
+        return (binary % (int)Math.Pow(10, digits)).ToString($"D{digits}");
     }
 
     static byte[] Base32Decode(string input)
