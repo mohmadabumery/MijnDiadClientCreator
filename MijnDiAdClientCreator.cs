@@ -2,29 +2,19 @@ using System;
 using System.Net;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Collections.Generic;
 
 class MijnDiAdClientCreator
 {
     static async Task Main(string[] args)
     {
-        // === Environment Variables ===
         var tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT");
         var username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
         var password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
         var totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
 
-        if (string.IsNullOrEmpty(tenant) || string.IsNullOrEmpty(username) ||
-            string.IsNullOrEmpty(password) || string.IsNullOrEmpty(totpSecret))
-        {
-            Console.WriteLine("❌ Missing environment variables");
-            Environment.Exit(1);
-        }
-
-        // === Get client JSON from args ===
+        // Get JSON input from args
         string clientJson = null;
         for (int i = 0; i < args.Length - 1; i++)
         {
@@ -41,24 +31,16 @@ class MijnDiAdClientCreator
             Environment.Exit(1);
         }
 
-        // === Setup HTTP client with cookie container ===
         var cookieContainer = new CookieContainer();
-        var handler = new HttpClientHandler
-        {
-            CookieContainer = cookieContainer,
-            UseCookies = true,
-            AutomaticDecompression = DecompressionMethods.All
-        };
+        var handler = new HttpClientHandler { CookieContainer = cookieContainer, UseCookies = true };
         using var client = new HttpClient(handler);
         client.Timeout = TimeSpan.FromSeconds(30);
 
-        // === 1️⃣ Fetch login page ===
-        Console.WriteLine("[1/3] Fetching login page...");
+        // Fetch login page
         var loginPage = await client.GetAsync($"https://{tenant}.mijndiad.nl/login");
         loginPage.EnsureSuccessStatusCode();
         var html = await loginPage.Content.ReadAsStringAsync();
 
-        // === 2️⃣ Extract CSRF token ===
         var csrfMatch = Regex.Match(html, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
         if (!csrfMatch.Success)
         {
@@ -67,8 +49,10 @@ class MijnDiAdClientCreator
         }
         var csrfToken = csrfMatch.Groups[1].Value;
 
-        // === 3️⃣ Login ===
-        Console.WriteLine("[2/3] Logging in...");
+        // Login payload as raw JSON string
+        string totp = GenerateTotp(totpSecret);
+        string loginPayload = $"{{\"email\":\"{username}\",\"password\":\"{password}\",\"totp_code\":\"{totp}\"}}";
+
         client.DefaultRequestHeaders.Clear();
         client.DefaultRequestHeaders.Add("Accept", "application/json");
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
@@ -76,30 +60,19 @@ class MijnDiAdClientCreator
         client.DefaultRequestHeaders.Add("Origin", $"https://{tenant}.mijndiad.nl");
         client.DefaultRequestHeaders.Add("Referer", $"https://{tenant}.mijndiad.nl/login");
 
-        var loginPayload = new Dictionary<string, object>
-        {
-            ["email"] = username,
-            ["password"] = password,
-            ["totp_code"] = GenerateTotp(totpSecret)
-        };
-
-        var loginJson = JsonSerializer.Serialize(loginPayload);
-        var loginContent = new StringContent(loginJson, Encoding.UTF8, "application/json");
-
+        var loginContent = new StringContent(loginPayload, Encoding.UTF8, "application/json");
         var loginResponse = await client.PostAsync($"https://{tenant}.mijndiad.nl/api/login", loginContent);
-        var loginBody = await loginResponse.Content.ReadAsStringAsync();
 
         if (!loginResponse.IsSuccessStatusCode)
         {
             Console.WriteLine($"❌ Login failed ({(int)loginResponse.StatusCode})");
-            Console.WriteLine(loginBody);
+            Console.WriteLine(await loginResponse.Content.ReadAsStringAsync());
             Environment.Exit(1);
         }
 
         Console.WriteLine("✓ Logged in successfully");
 
-        // === 4️⃣ Create client ===
-        Console.WriteLine("[3/3] Creating client...");
+        // Post client JSON directly
         client.DefaultRequestHeaders.Clear();
         client.DefaultRequestHeaders.Add("Accept", "application/json");
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
@@ -108,23 +81,21 @@ class MijnDiAdClientCreator
 
         var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
         var createResponse = await client.PostAsync($"https://{tenant}.mijndiad.nl/api/clients", clientContent);
-        var createBody = await createResponse.Content.ReadAsStringAsync();
 
         if (!createResponse.IsSuccessStatusCode)
         {
             Console.WriteLine($"❌ Client creation failed ({(int)createResponse.StatusCode})");
-            Console.WriteLine(createBody);
+            Console.WriteLine(await createResponse.Content.ReadAsStringAsync());
             Environment.Exit(1);
         }
 
         Console.WriteLine("✅ Client successfully created!");
-        Console.WriteLine(createBody);
+        Console.WriteLine(await createResponse.Content.ReadAsStringAsync());
     }
 
     static string GenerateTotp(string base32Secret)
     {
         if (string.IsNullOrEmpty(base32Secret)) return "000000";
-
         var key = Base32Decode(base32Secret);
         var timestep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
 
