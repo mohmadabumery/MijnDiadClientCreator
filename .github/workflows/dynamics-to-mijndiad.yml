@@ -13,21 +13,31 @@ jobs:
     name: Login to MijnDiAd
     runs-on: ubuntu-latest
     outputs:
-      session_cookie: ${{ steps.login.outputs.SESSION_COOKIE }}
-      xsrf_token: ${{ steps.login.outputs.XSRF_TOKEN }}
+      session_cookie: ${{ steps.login_step.outputs.session_cookie }}
+      xsrf_token: ${{ steps.login_step.outputs.xsrf_token }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-      
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
-      
+
       - name: Login and Get Session Cookies
-        id: login
+        id: login_step
         run: |
-          dotnet run --project LoginApp
+          # Run the login app and capture the output in key=value format
+          LOGIN_OUTPUT=$(dotnet run --project LoginApp)
+          
+          # Example output from LoginApp:
+          # SESSION_COOKIE=abc123
+          # XSRF_TOKEN=def456
+          
+          # Extract SESSION_COOKIE
+          SESSION_COOKIE=$(echo "$LOGIN_OUTPUT" | grep SESSION_COOKIE | cut -d '=' -f2)
+          XSRF_TOKEN=$(echo "$LOGIN_OUTPUT" | grep XSRF_TOKEN | cut -d '=' -f2)
+          
           echo "SESSION_COOKIE=$SESSION_COOKIE" >> $GITHUB_OUTPUT
           echo "XSRF_TOKEN=$XSRF_TOKEN" >> $GITHUB_OUTPUT
         env:
@@ -43,12 +53,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-      
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
-      
+
       - name: Create Client
         run: |
           dotnet run --project CreateClientApp -- --json '${{ inputs.dynamics_json }}'
@@ -56,3 +66,12 @@ jobs:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           SESSION_COOKIE: ${{ needs.login.outputs.session_cookie }}
           XSRF_TOKEN: ${{ needs.login.outputs.xsrf_token }}
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ Client successfully created in MijnDiAd EPD"
+          else
+            echo "❌ Failed to create client - check logs above"
+          fi
