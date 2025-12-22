@@ -1,35 +1,42 @@
-name: Dynamics to MijnDiAd
+name: Create MijnDiAd Client
 
-# Triggered manually (workflow_dispatch) so Power Automate can call it
 on:
   workflow_dispatch:
     inputs:
-      dynamics_json:
-        description: 'JSON payload from Power Automate'
+      client_json:
+        description: 'Client JSON payload'
         required: true
         default: '{}'
 
 jobs:
   create-client:
     runs-on: ubuntu-latest
-    env:
-      DOTNET_ROOT: /usr/share/dotnet
-      MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-      MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-      MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-      MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
     steps:
-      - name: Checkout repository
+
+      # 1️⃣ Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Setup .NET SDK
+      # 2️⃣ Setup .NET
+      - name: Setup .NET 8
         uses: actions/setup-dotnet@v3
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: '8.0.x'
 
+      # 3️⃣ Restore dependencies
+      - name: Restore dependencies
+        run: dotnet restore MijnDiAdClientCreator/MijnDiAdClientCreator.csproj
+
+      # 4️⃣ Build the project
       - name: Build project
         run: dotnet build MijnDiAdClientCreator/MijnDiAdClientCreator.csproj --configuration Release
 
-      - name: Run MijnDiAdClientCreator
+      # 5️⃣ Run client creation
+      - name: Run client creation
         run: |
-          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json '${{ github.event.inputs.dynamics_json }}'
+          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json "${{ github.event.inputs.client_json }}"
+        env:
+          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+          MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
+          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
+          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
