@@ -1,99 +1,104 @@
-using System.Text.Json;
 using Microsoft.Playwright;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 class Program
 {
-    public static async Task Main()
+    static async Task Main()
     {
-        string username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
-        string password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
-        string totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
-        string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
+        Console.WriteLine("== LoginAutomation with OTP ==");
 
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password) || string.IsNullOrWhiteSpace(totpSecret))
-        {
-            Console.WriteLine("Missing secrets!");
-            return;
-        }
+        var username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
+        var password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
+        var tenant   = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT");
+        var totpKey  = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
 
         using var playwright = await Playwright.CreateAsync();
-        var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        await using var browser = await playwright.Chromium.LaunchAsync(new()
+        {
+            Headless = true
+        });
+
         var context = await browser.NewContextAsync();
         var page = await context.NewPageAsync();
 
-        Console.WriteLine("Navigating to login page...");
         await page.GotoAsync($"https://{tenant}.mijndiad.nl/login");
 
-        // Fill username/password
+        // Step 1: username + password
         await page.FillAsync("input[name=email]", username);
         await page.FillAsync("input[name=password]", password);
-
-        // Fill TOTP
-        string totpCode = GenerateTOTP(totpSecret);
-        await page.FillAsync("input[name=totp_code]", totpCode);
-
         await page.ClickAsync("button[type=submit]");
-        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
 
-        // Get session cookies and XSRF token
+        // Step 2: wait for OTP field
+        await page.WaitForSelectorAsync("input[name=otp]");
+
+        var otp = GenerateTotp(totpKey);
+        Console.WriteLine($"Generated OTP: {otp}");
+
+        await page.FillAsync("input[name=otp]", otp);
+        await page.ClickAsync("button[type=submit]");
+
+        // Step 3: successful login redirect
+        await page.WaitForURLAsync($"https://{tenant}.mijndiad.nl/**");
+
         var cookies = await context.CookiesAsync();
-        var xsrfToken = await page.EvaluateAsync<string>("() => document.querySelector('meta[name=\"csrf-token\"]').getAttribute('content')");
+        var xsrf = cookies.First(c => c.Name == "XSRF-TOKEN").Value;
 
-        var sessionData = new
-        {
-            cookies,
-            xsrfToken
-        };
+        Directory.CreateDirectory("session");
 
-        string json = JsonSerializer.Serialize(sessionData, new JsonSerializerOptions { WriteIndented = true });
-        await File.WriteAllTextAsync("session/session.json", json);
+        await File.WriteAllTextAsync(
+            "session/session.json",
+            JsonSerializer.Serialize(new
+            {
+                cookies,
+                xsrf,
+                createdAt = DateTime.UtcNow
+            }, new JsonSerializerOptions { WriteIndented = true })
+        );
 
-        Console.WriteLine("✓ Session saved successfully!");
-        await browser.CloseAsync();
+        Console.WriteLine("✅ Login + OTP successful, session saved");
     }
 
-    static string GenerateTOTP(string secret)
+    // RFC 6238 TOTP
+    static string GenerateTotp(string secret)
     {
-        // Use the same TOTP function from previous code
-        byte[] secretBytes = Base32Decode(secret);
-        long epoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        long counter = epoch / 30;
+        var key = Base32Decode(secret);
+        var timestep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+        var data = BitConverter.GetBytes(timestep);
+        if (BitConverter.IsLittleEndian)
+            Array.Reverse(data);
 
-        byte[] counterBytes = new byte[8];
-        for (int i = 7; i >= 0; i--)
-        {
-            counterBytes[i] = (byte)(counter & 0xFF);
-            counter >>= 8;
-        }
+        using var hmac = new HMACSHA1(key);
+        var hash = hmac.ComputeHash(data);
 
-        using var hmac = new System.Security.Cryptography.HMACSHA1(secretBytes);
-        byte[] hash = hmac.ComputeHash(counterBytes);
+        int offset = hash[^1] & 0x0F;
+        int binary =
+            ((hash[offset] & 0x7f) << 24) |
+            ((hash[offset + 1] & 0xff) << 16) |
+            ((hash[offset + 2] & 0xff) << 8) |
+            (hash[offset + 3] & 0xff);
 
-        int offset = hash[hash.Length - 1] & 0x0F;
-        int binary = ((hash[offset] & 0x7F) << 24)
-                   | ((hash[offset + 1] & 0xFF) << 16)
-                   | ((hash[offset + 2] & 0xFF) << 8)
-                   | (hash[offset + 3] & 0xFF);
-
-        int otp = binary % 1000000;
-        return otp.ToString("D6");
+        return (binary % 1_000_000).ToString("D6");
     }
 
-    static byte[] Base32Decode(string base32)
+    static byte[] Base32Decode(string input)
     {
         const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        string bits = "";
-        foreach (char c in base32.ToUpper())
+        var bytes = new List<byte>();
+
+        int buffer = 0, bitsLeft = 0;
+        foreach (char c in input.TrimEnd('=').ToUpperInvariant())
         {
-            int index = alphabet.IndexOf(c);
-            if (index < 0) continue;
-            bits += Convert.ToString(index, 2).PadLeft(5, '0');
-        }
-        var bytes = new System.Collections.Generic.List<byte>();
-        for (int i = 0; i < bits.Length; i += 8)
-        {
-            if (i + 8 <= bits.Length)
-                bytes.Add(Convert.ToByte(bits.Substring(i, 8), 2));
+            buffer <<= 5;
+            buffer |= alphabet.IndexOf(c);
+            bitsLeft += 5;
+
+            if (bitsLeft >= 8)
+            {
+                bytes.Add((byte)(buffer >> (bitsLeft - 8)));
+                bitsLeft -= 8;
+            }
         }
         return bytes.ToArray();
     }
