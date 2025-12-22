@@ -1,12 +1,10 @@
 name: Dynamics → MijnDiAd (Auto-Login + Create Client)
 
+# Trigger the workflow whenever temp.json is updated
 on:
-  workflow_dispatch:
-    inputs:
-      dynamics_json:
-        description: "JSON payload from Power Automate"
-        required: true
-        type: string
+  push:
+    paths:
+      - path/to/temp.json  # <- Replace with your temp.json location
 
 jobs:
   login:
@@ -27,7 +25,12 @@ jobs:
       - name: Login and Get Session Cookies
         id: login
         run: |
+          # Run your login app
           dotnet run --project LoginApp
+          
+          # Capture environment variables set by LoginApp
+          echo "SESSION_COOKIE=$SESSION_COOKIE" >> $GITHUB_OUTPUT
+          echo "XSRF_TOKEN=$XSRF_TOKEN" >> $GITHUB_OUTPUT
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
@@ -47,9 +50,15 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       
+      - name: Read Dynamics JSON from temp.json
+        id: read_json
+        run: |
+          DYNAMICS_JSON=$(cat path/to/temp.json)
+          echo "DYNAMICS_JSON=$DYNAMICS_JSON" >> $GITHUB_ENV
+      
       - name: Create Client
         run: |
-          dotnet run --project CreateClientApp -- --json '${{ inputs.dynamics_json }}'
+          dotnet run --project CreateClientApp -- --json "$DYNAMICS_JSON"
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           SESSION_COOKIE: ${{ needs.login.outputs.session_cookie }}
