@@ -1,10 +1,12 @@
 name: Dynamics → MijnDiAd (Auto-Login + Create Client)
 
-# Trigger whenever temp.json in the pending folder is updated
 on:
-  push:
-    paths:
-      - pending/temp.json
+  workflow_dispatch:
+    inputs:
+      dynamics_json:
+        description: "JSON payload from Power Automate"
+        required: true
+        type: string
 
 jobs:
   login:
@@ -25,13 +27,32 @@ jobs:
       - name: Login and Get Session Cookies
         id: login
         run: |
-          # Run your login app
           dotnet run --project LoginApp
-          
-          # Capture environment variables set by LoginApp as workflow outputs
           echo "SESSION_COOKIE=$SESSION_COOKIE" >> $GITHUB_OUTPUT
           echo "XSRF_TOKEN=$XSRF_TOKEN" >> $GITHUB_OUTPUT
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-          MIJNDIAD_PASSWORD: ${{ secrets.M_
+          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
+          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+
+  create-client:
+    name: Create Client in MijnDiAd
+    runs-on: ubuntu-latest
+    needs: login
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '8.0.x'
+      
+      - name: Create Client
+        run: |
+          dotnet run --project CreateClientApp -- --json '${{ inputs.dynamics_json }}'
+        env:
+          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+          SESSION_COOKIE: ${{ needs.login.outputs.session_cookie }}
+          XSRF_TOKEN: ${{ needs.login.outputs.xsrf_token }}
