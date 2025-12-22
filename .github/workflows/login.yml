@@ -1,0 +1,30 @@
+name: Login to MijnDiAd
+
+on:
+  workflow_dispatch:
+
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 8.0.x
+
+      - run: dotnet restore LoginAutomation
+      - run: dotnet build LoginAutomation
+
+      - run: |
+          dotnet run --project LoginAutomation
+        env:
+          MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
+          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
+          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+
+      - run: |
+          git add session/session.json
+          git commit -m "Update session"
+          git push
