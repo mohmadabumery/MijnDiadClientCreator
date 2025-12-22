@@ -23,7 +23,7 @@ jobs:
 
       - name: Create client in MijnDiAd
         run: |
-          dotnet run --project MijnDiAdClientCreatorApp -- --json '${{ inputs.dynamics_json }}'
+          dotnet run -- --json '${{ inputs.dynamics_json }}'
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
