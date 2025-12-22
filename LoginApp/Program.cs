@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.IO;
 
 class LoginProgram
 {
@@ -15,8 +14,6 @@ class LoginProgram
         var username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
         var password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
         var totp = GenerateTotp(Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET"));
-
-        Console.WriteLine("== MijnDiAd Auto-Login ==");
 
         var cookieContainer = new CookieContainer();
 
@@ -30,34 +27,25 @@ class LoginProgram
         using var client = new HttpClient(handler);
         client.Timeout = TimeSpan.FromSeconds(30);
 
-        // 1️⃣ FETCH LOGIN PAGE
-        Console.WriteLine("[1/4] Fetching initial session cookies...");
+        // 1️⃣ Fetch login page
         var loginPageResponse = await client.GetAsync(
             $"https://{tenant}.mijndiad.nl/login"
         );
         loginPageResponse.EnsureSuccessStatusCode();
         var loginPageHtml = await loginPageResponse.Content.ReadAsStringAsync();
 
-        // 2️⃣ EXTRACT CSRF TOKEN
-        Console.WriteLine("[2/4] Extracting CSRF token...");
+        // 2️⃣ Extract CSRF token
         var csrfMatch = Regex.Match(
             loginPageHtml,
             "<meta name=\"csrf-token\" content=\"([^\"]+)\""
         );
 
         if (!csrfMatch.Success)
-        {
-            Console.WriteLine("❌ CSRF token not found in login page");
             Environment.Exit(1);
-        }
 
         var csrfToken = csrfMatch.Groups[1].Value;
-        Console.WriteLine($"✓ CSRF Token extracted");
 
-        // 3️⃣ LOGIN
-        Console.WriteLine("[3/4] Logging in to MijnDiAd...");
-        Console.WriteLine($"✓ Generated TOTP: {totp}");
-
+        // 3️⃣ Login
         client.DefaultRequestHeaders.Clear();
         client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
@@ -80,18 +68,10 @@ class LoginProgram
             content
         );
 
-        var responseBody = await response.Content.ReadAsStringAsync();
-
         if (!response.IsSuccessStatusCode)
-        {
-            Console.WriteLine($"❌ Login failed: {(int)response.StatusCode}");
-            Console.WriteLine(responseBody);
             Environment.Exit(1);
-        }
 
-        // 4️⃣ EXTRACT AND SAVE COOKIES
-        Console.WriteLine("[4/4] Extracting authenticated session cookies...");
-
+        // 4️⃣ Extract cookies
         var cookies = cookieContainer.GetCookies(
             new Uri($"https://{tenant}.mijndiad.nl")
         );
@@ -102,34 +82,23 @@ class LoginProgram
         foreach (Cookie cookie in cookies)
         {
             if (cookie.Name == $"{tenant}_session")
-            {
                 sessionCookie = cookie.Value;
-                Console.WriteLine($"✓ Got session cookie: {sessionCookie.Substring(0, 20)}...");
-            }
+
             if (cookie.Name == "XSRF-TOKEN")
-            {
                 xsrfToken = cookie.Value;
-                Console.WriteLine($"✓ Got XSRF token: {xsrfToken.Substring(0, 20)}...");
-            }
         }
 
         if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
-        {
-            Console.WriteLine("❌ Auth session cookies not found");
             Environment.Exit(1);
-        }
 
-        // Save cookies to GitHub environment for next workflow
-        var githubOutput = Environment.GetEnvironmentVariable("GITHUB_OUTPUT");
-        if (!string.IsNullOrEmpty(githubOutput))
+        // ✅ FINAL & ONLY OUTPUT (GitHub Actions reads this)
+        var output = new
         {
-            File.AppendAllText(githubOutput, $"SESSION_COOKIE={sessionCookie}\n");
-            File.AppendAllText(githubOutput, $"XSRF_TOKEN={xsrfToken}\n");
-            Console.WriteLine("✓ Cookies saved to GitHub output");
-        }
+            session_cookie = sessionCookie,
+            xsrf_token = xsrfToken
+        };
 
-        Console.WriteLine("\n✅ Login successful!");
-        Console.WriteLine("✅ Session cookies are ready for client creation");
+        Console.WriteLine(JsonSerializer.Serialize(output));
     }
 
     static string GenerateTotp(string base32Secret)
