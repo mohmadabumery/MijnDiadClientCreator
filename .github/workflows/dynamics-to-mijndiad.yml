@@ -1,21 +1,26 @@
-name: Dynamics to MijnDiAd
+name: Create MijnDiAd Client
 
 on:
   workflow_dispatch:
     inputs:
-      dynamics_json:
-        description: 'Client JSON payload from Power Automate'
+      client_data:
+        description: 'JSON data for client creation'
         required: true
-        type: string
+        default: '{}'
 
 jobs:
-  login:
+  create-client:
     runs-on: ubuntu-latest
-    outputs:
-      session_cookie: ${{ steps.login-out.outputs.session_cookie }}
-      xsrf_token: ${{ steps.login-out.outputs.xsrf_token }}
+
+    env:
+      DOTNET_ROOT: /usr/share/dotnet
+      MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+      MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
+      MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
+      MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Setup .NET
@@ -23,17 +28,10 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Login to MijnDiAd
-        id: login-out
-        run: |
-          dotnet build MijnDiAdClientCreator.csproj
-          dotnet run --project MijnDiAdClientCreator.csproj -- --json '{}'
-        env:
-          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-          MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
-        continue-on-error: false
+      - name: Build project
+        run: dotnet build MijnDiAdClientCreator.csproj --configuration Release
 
-      - name: Export login outputs
+      - name: Run client creation
         run: |
+          echo "Running MijnDiAdClientCreator with provided JSON..."
+          dotnet run --project MijnDiAdClientCreator.csproj -- --json '${{ github.event.inputs.client_data }}'
