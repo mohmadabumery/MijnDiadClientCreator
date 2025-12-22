@@ -1,28 +1,36 @@
-name: Create Client in MijnDiAd
+name: Dynamics → MijnDiAd (Auto-Login + Create Client)
 
 on:
   workflow_dispatch:
     inputs:
       dynamics_json:
-        description: "Client JSON coming from Power Automate"
+        description: "JSON payload from Power Automate"
         required: true
         type: string
 
 jobs:
-  create-client:
+  run-client-creator:
+    name: Run MijnDiAd Client Creator
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - uses: actions/setup-dotnet@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
 
-      - name: Create client in MijnDiAd
-        run: dotnet run -- MijnDiAdClientCreator.cs -- --json '${{ inputs.dynamics_json }}'
+      - name: Install dotnet-script
+        run: dotnet tool install -g dotnet-script
+
+      - name: Run MijnDiAd Client Creator
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
           MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
           MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+        run: |
+          export PATH="$PATH:/home/runner/.dotnet/tools"
+          dotnet script MijnDiAdClientCreator.cs -- --json '${{ inputs.dynamics_json }}'
