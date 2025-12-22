@@ -1,37 +1,35 @@
-name: Create MijnDiAd Client
+name: Dynamics to MijnDiAd
 
+# Triggered manually (workflow_dispatch) so Power Automate can call it
 on:
   workflow_dispatch:
     inputs:
-      client_data:
-        description: 'JSON data for client creation'
+      dynamics_json:
+        description: 'JSON payload from Power Automate'
         required: true
         default: '{}'
 
 jobs:
   create-client:
     runs-on: ubuntu-latest
-
     env:
       DOTNET_ROOT: /usr/share/dotnet
       MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
       MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
       MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
       MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup .NET
+      - name: Setup .NET SDK
         uses: actions/setup-dotnet@v3
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: 8.0.x
 
       - name: Build project
-        run: dotnet build MijnDiAdClientCreator.csproj --configuration Release
+        run: dotnet build MijnDiAdClientCreator/MijnDiAdClientCreator.csproj --configuration Release
 
-      - name: Run client creation
+      - name: Run MijnDiAdClientCreator
         run: |
-          echo "Running MijnDiAdClientCreator with provided JSON..."
-          dotnet run --project MijnDiAdClientCreator.csproj -- --json '${{ github.event.inputs.client_data }}'
+          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json '${{ github.event.inputs.dynamics_json }}'
