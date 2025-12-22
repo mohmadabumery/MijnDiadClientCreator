@@ -1,10 +1,10 @@
 name: Dynamics → MijnDiAd (Auto-Login + Create Client)
 
-# Trigger the workflow whenever temp.json is updated
+# Trigger whenever temp.json in the pending folder is updated
 on:
   push:
     paths:
-      - path/to/temp.json  # <- Replace with your temp.json location
+      - pending/temp.json
 
 jobs:
   login:
@@ -28,47 +28,10 @@ jobs:
           # Run your login app
           dotnet run --project LoginApp
           
-          # Capture environment variables set by LoginApp
+          # Capture environment variables set by LoginApp as workflow outputs
           echo "SESSION_COOKIE=$SESSION_COOKIE" >> $GITHUB_OUTPUT
           echo "XSRF_TOKEN=$XSRF_TOKEN" >> $GITHUB_OUTPUT
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
-
-  create-client:
-    name: Create Client in MijnDiAd
-    runs-on: ubuntu-latest
-    needs: login
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-      
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: '8.0.x'
-      
-      - name: Read Dynamics JSON from temp.json
-        id: read_json
-        run: |
-          DYNAMICS_JSON=$(cat path/to/temp.json)
-          echo "DYNAMICS_JSON=$DYNAMICS_JSON" >> $GITHUB_ENV
-      
-      - name: Create Client
-        run: |
-          dotnet run --project CreateClientApp -- --json "$DYNAMICS_JSON"
-        env:
-          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-          SESSION_COOKIE: ${{ needs.login.outputs.session_cookie }}
-          XSRF_TOKEN: ${{ needs.login.outputs.xsrf_token }}
-      
-      - name: Summary
-        if: always()
-        run: |
-          if [ $? -eq 0 ]; then
-            echo "✅ Client successfully created in MijnDiAd EPD"
-          else
-            echo "❌ Failed to create client - check logs above"
-          fi
+          MIJNDIAD_PASSWORD: ${{ secrets.M_
