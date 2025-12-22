@@ -12,9 +12,11 @@ jobs:
   login:
     name: Login to MijnDiAd
     runs-on: ubuntu-latest
+
     outputs:
-      session_cookie: ${{ steps.login_step.outputs.session_cookie }}
-      xsrf_token: ${{ steps.login_step.outputs.xsrf_token }}
+      session_cookie: ${{ steps.extract.outputs.session_cookie }}
+      xsrf_token: ${{ steps.extract.outputs.xsrf_token }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -24,32 +26,36 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Login and Get Session Cookies
-        id: login_step
+      - name: Run LoginApp and capture output
+        id: login
         run: |
-          # Run the login app and capture the output in key=value format
-          LOGIN_OUTPUT=$(dotnet run --project LoginApp)
-          
-          # Example output from LoginApp:
-          # SESSION_COOKIE=abc123
-          # XSRF_TOKEN=def456
-          
-          # Extract SESSION_COOKIE
-          SESSION_COOKIE=$(echo "$LOGIN_OUTPUT" | grep SESSION_COOKIE | cut -d '=' -f2)
-          XSRF_TOKEN=$(echo "$LOGIN_OUTPUT" | grep XSRF_TOKEN | cut -d '=' -f2)
-          
-          echo "SESSION_COOKIE=$SESSION_COOKIE" >> $GITHUB_OUTPUT
-          echo "XSRF_TOKEN=$XSRF_TOKEN" >> $GITHUB_OUTPUT
+          dotnet run --project LoginApp > login_output.json
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
           MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
           MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
 
+      - name: Extract session values
+        id: extract
+        run: |
+          SESSION_COOKIE=$(jq -r '.session_cookie' login_output.json)
+          XSRF_TOKEN=$(jq -r '.xsrf_token' login_output.json)
+
+          if [ -z "$SESSION_COOKIE" ] || [ -z "$XSRF_TOKEN" ]; then
+            echo "❌ Login did not return required session data"
+            cat login_output.json
+            exit 1
+          fi
+
+          echo "session_cookie=$SESSION_COOKIE" >> $GITHUB_OUTPUT
+          echo "xsrf_token=$XSRF_TOKEN" >> $GITHUB_OUTPUT
+
   create-client:
     name: Create Client in MijnDiAd
     runs-on: ubuntu-latest
     needs: login
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -58,6 +64,16 @@ jobs:
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '8.0.x'
+
+      - name: Validate session variables
+        run: |
+          if [ -z "${SESSION_COOKIE}" ] || [ -z "${XSRF_TOKEN}" ]; then
+            echo "❌ Missing session variables"
+            exit 1
+          fi
+        env:
+          SESSION_COOKIE: ${{ needs.login.outputs.session_cookie }}
+          XSRF_TOKEN: ${{ needs.login.outputs.xsrf_token }}
 
       - name: Create Client
         run: |
@@ -71,7 +87,7 @@ jobs:
         if: always()
         run: |
           if [ $? -eq 0 ]; then
-            echo "✅ Client successfully created in MijnDiAd EPD"
+            echo "✅ Client successfully created in MijnDiAd"
           else
-            echo "❌ Failed to create client - check logs above"
+            echo "❌ Client creation failed – see logs above"
           fi
