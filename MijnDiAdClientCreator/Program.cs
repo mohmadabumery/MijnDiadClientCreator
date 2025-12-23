@@ -96,12 +96,13 @@ class Program
             if (cookie.Name == $"{tenant}_session")
             {
                 sessionCookie = cookie.Value;
-                Console.WriteLine($"  ✓ Session cookie: {sessionCookie.Substring(0, 20)}...");
+                Console.WriteLine($"  ✓ Session cookie: {sessionCookie.Substring(0, Math.Min(20, sessionCookie.Length))}... (length: {sessionCookie.Length})");
             }
             if (cookie.Name == "XSRF-TOKEN")
             {
-                xsrfToken = cookie.Value;
-                Console.WriteLine($"  ✓ XSRF token: {xsrfToken.Substring(0, 20)}...");
+                // URL decode the XSRF token
+                xsrfToken = Uri.UnescapeDataString(cookie.Value);
+                Console.WriteLine($"  ✓ XSRF token: {xsrfToken.Substring(0, Math.Min(20, xsrfToken.Length))}... (length: {xsrfToken.Length})");
             }
         }
 
@@ -120,14 +121,15 @@ class Program
         if (dashboardResponse.IsSuccessStatusCode)
         {
             Console.WriteLine("  ✓ Dashboard loaded successfully");
-        }
-
-        // Refresh cookies after dashboard visit
-        cookies = cookieContainer.GetCookies(new Uri($"https://{tenant}.mijndiad.nl"));
-        foreach (Cookie cookie in cookies)
-        {
-            if (cookie.Name == $"{tenant}_session") sessionCookie = cookie.Value;
-            if (cookie.Name == "XSRF-TOKEN") xsrfToken = cookie.Value;
+            
+            // Extract fresh XSRF token from dashboard page
+            var dashboardHtml = await dashboardResponse.Content.ReadAsStringAsync();
+            var dashboardCsrfMatch = Regex.Match(dashboardHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
+            if (dashboardCsrfMatch.Success)
+            {
+                xsrfToken = dashboardCsrfMatch.Groups[1].Value;
+                Console.WriteLine($"  ✓ Refreshed XSRF token from dashboard (length: {xsrfToken.Length})");
+            }
         }
 
         // 5️⃣ CREATE CLIENT
