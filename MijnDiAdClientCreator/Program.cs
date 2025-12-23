@@ -85,14 +85,20 @@ class Program
 
         Console.WriteLine($"  ✓ Login successful");
 
-        // 4️⃣ EXTRACT SESSION COOKIES
-        Console.WriteLine("[4/5] Extracting session cookies...");
+        // 4️⃣ EXTRACT ALL SESSION COOKIES
+        Console.WriteLine("[4/5] Extracting all session cookies...");
         var cookies = cookieContainer.GetCookies(new Uri($"https://{tenant}.mijndiad.nl"));
         string sessionCookie = null;
         string xsrfToken = null;
+        var allCookies = new StringBuilder();
         
         foreach (Cookie cookie in cookies)
         {
+            // Add all cookies to the cookie string
+            if (allCookies.Length > 0) allCookies.Append("; ");
+            allCookies.Append($"{cookie.Name}={Uri.UnescapeDataString(cookie.Value)}");
+            
+            // Track specific important cookies
             if (cookie.Name == $"{tenant}_session")
             {
                 sessionCookie = cookie.Value;
@@ -100,11 +106,15 @@ class Program
             }
             if (cookie.Name == "XSRF-TOKEN")
             {
-                // URL decode the XSRF token
                 xsrfToken = Uri.UnescapeDataString(cookie.Value);
                 Console.WriteLine($"  ✓ XSRF token: {xsrfToken.Substring(0, Math.Min(20, xsrfToken.Length))}... (length: {xsrfToken.Length})");
             }
+            
+            Console.WriteLine($"  ✓ Cookie: {cookie.Name} = {cookie.Value.Substring(0, Math.Min(20, cookie.Value.Length))}...");
         }
+        
+        var fullCookieHeader = allCookies.ToString();
+        Console.WriteLine($"  Total cookies captured: {cookies.Count}");
 
         if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
         {
@@ -130,6 +140,19 @@ class Program
                 xsrfToken = dashboardCsrfMatch.Groups[1].Value;
                 Console.WriteLine($"  ✓ Refreshed XSRF token from dashboard (length: {xsrfToken.Length})");
             }
+            
+            // Refresh all cookies after dashboard visit
+            cookies = cookieContainer.GetCookies(new Uri($"https://{tenant}.mijndiad.nl"));
+            allCookies.Clear();
+            
+            foreach (Cookie cookie in cookies)
+            {
+                if (allCookies.Length > 0) allCookies.Append("; ");
+                allCookies.Append($"{cookie.Name}={Uri.UnescapeDataString(cookie.Value)}");
+            }
+            
+            fullCookieHeader = allCookies.ToString();
+            Console.WriteLine($"  ✓ Refreshed all cookies (total: {cookies.Count})");
         }
 
         // 5️⃣ CREATE CLIENT
@@ -147,12 +170,10 @@ class Program
         clientRequest.Headers.Add("Origin", $"https://{tenant}.mijndiad.nl");
         clientRequest.Headers.Add("Referer", $"https://{tenant}.mijndiad.nl/clients/create");
         clientRequest.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-        clientRequest.Headers.Add("Cookie", $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
+        clientRequest.Headers.Add("Cookie", fullCookieHeader);
         
         Console.WriteLine($"  Posting to: https://{tenant}.mijndiad.nl/api/clients");
-        Console.WriteLine($"  Session cookie: {sessionCookie}");
-        Console.WriteLine($"  XSRF token: {xsrfToken}");
-        Console.WriteLine($"  Cookie header: {tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
+        Console.WriteLine($"  Full cookie header: {fullCookieHeader.Substring(0, Math.Min(100, fullCookieHeader.Length))}...");
         
         var clientResponse = await apiClient.SendAsync(clientRequest);
         var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
