@@ -80,30 +80,32 @@ class Program
         Console.WriteLine("✓ CSRF refreshed from dashboard");
 
         /* -------------------- 4. CREATE CLIENT -------------------- */
-        Console.WriteLine("[4/4] Creating client...");
+Console.WriteLine("[4/4] Creating client...");
 
-        client.DefaultRequestHeaders.Clear();
-        client.DefaultRequestHeaders.Add("X-XSRF-TOKEN", xsrf); // 🔥 THIS IS THE KEY
-        client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
-        client.DefaultRequestHeaders.Add("Accept", "application/json");
-        client.DefaultRequestHeaders.Referrer =
-            new Uri($"https://{tenant}.mijndiad.nl/clients/create");
+client.DefaultRequestHeaders.Clear();
 
-        var resp = await client.PostAsync(
-            $"https://{tenant}.mijndiad.nl/api/clients",
-            new StringContent(clientJson, Encoding.UTF8, "application/json")
-        );
+// 🔑 THIS is what MijnDiAd expects
+client.DefaultRequestHeaders.Add("x-csrf-token", xsrf);
+client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+client.DefaultRequestHeaders.Add("Accept", "application/json");
+client.DefaultRequestHeaders.Add("Origin", $"https://{tenant}.mijndiad.nl");
+client.DefaultRequestHeaders.Referrer =
+    new Uri($"https://{tenant}.mijndiad.nl/clients/create");
 
-        var body = await resp.Content.ReadAsStringAsync();
+var resp = await client.PostAsync(
+    $"https://{tenant}.mijndiad.nl/api/clients",
+    new StringContent(clientJson, Encoding.UTF8, "application/json")
+);
 
-        Console.WriteLine($"== STATUS {(int)resp.StatusCode} ==");
-        Console.WriteLine(body);
+var body = await resp.Content.ReadAsStringAsync();
 
-        if (!resp.IsSuccessStatusCode)
-            throw new Exception("❌ Client creation failed");
+Console.WriteLine($"== STATUS {(int)resp.StatusCode} ==");
+Console.WriteLine(body);
 
-        Console.WriteLine("✅ Client created successfully");
-    }
+if (!resp.IsSuccessStatusCode)
+    throw new Exception("❌ Client creation failed");
+
+Console.WriteLine("✅ Client created successfully");
 
     static string GetEnv(string key) =>
         Environment.GetEnvironmentVariable(key)
