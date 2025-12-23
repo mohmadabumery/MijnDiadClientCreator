@@ -114,16 +114,22 @@ class Program
         // 5️⃣ CREATE CLIENT
         Console.WriteLine("[5/5] Creating client...");
         
-        // Reset headers for API call
-        client.DefaultRequestHeaders.Clear();
-        client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
-        client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
-        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", xsrfToken);
-        client.DefaultRequestHeaders.Add("Origin", $"https://{tenant}.mijndiad.nl");
-        client.DefaultRequestHeaders.Add("Referer", $"https://{tenant}.mijndiad.nl/clients/create");
-
-        var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
-        var clientResponse = await client.PostAsync($"https://{tenant}.mijndiad.nl/api/clients", clientContent);
+        // Create a new request with explicit cookie header
+        var clientRequest = new HttpRequestMessage(HttpMethod.Post, $"https://{tenant}.mijndiad.nl/api/clients");
+        clientRequest.Content = new StringContent(clientJson, Encoding.UTF8, "application/json");
+        
+        // Add all required headers
+        clientRequest.Headers.Add("Accept", "application/json, text/plain, */*");
+        clientRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        clientRequest.Headers.Add("X-CSRF-TOKEN", xsrfToken);
+        clientRequest.Headers.Add("Origin", $"https://{tenant}.mijndiad.nl");
+        clientRequest.Headers.Add("Referer", $"https://{tenant}.mijndiad.nl/clients/create");
+        clientRequest.Headers.Add("Cookie", $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
+        
+        Console.WriteLine($"  Posting to: https://{tenant}.mijndiad.nl/api/clients");
+        Console.WriteLine($"  With cookies: {tenant}_session and XSRF-TOKEN");
+        
+        var clientResponse = await client.SendAsync(clientRequest);
         var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
 
         Console.WriteLine($"\n== Response Status: {(int)clientResponse.StatusCode} ==");
