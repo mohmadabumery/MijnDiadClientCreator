@@ -135,24 +135,26 @@ class Program
         // 5️⃣ CREATE CLIENT
         Console.WriteLine("[5/5] Creating client...");
         
-        // Create a new request with explicit cookie header
+        // Create a completely new HttpClient without cookie container for this request
+        using var apiClient = new HttpClient();
         var clientRequest = new HttpRequestMessage(HttpMethod.Post, $"https://{tenant}.mijndiad.nl/api/clients");
         clientRequest.Content = new StringContent(clientJson, Encoding.UTF8, "application/json");
         
         // Add all required headers exactly as browser sends them
         clientRequest.Headers.Add("Accept", "application/json, text/plain, */*");
         clientRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
-        clientRequest.Headers.Add("x-csrf-token", xsrfToken);  // lowercase!
+        clientRequest.Headers.Add("x-csrf-token", xsrfToken);
         clientRequest.Headers.Add("Origin", $"https://{tenant}.mijndiad.nl");
         clientRequest.Headers.Add("Referer", $"https://{tenant}.mijndiad.nl/clients/create");
         clientRequest.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
         clientRequest.Headers.Add("Cookie", $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
         
         Console.WriteLine($"  Posting to: https://{tenant}.mijndiad.nl/api/clients");
-        Console.WriteLine($"  Session cookie length: {sessionCookie.Length}");
-        Console.WriteLine($"  XSRF token length: {xsrfToken.Length}");
+        Console.WriteLine($"  Session cookie: {sessionCookie}");
+        Console.WriteLine($"  XSRF token: {xsrfToken}");
+        Console.WriteLine($"  Cookie header: {tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
         
-        var clientResponse = await client.SendAsync(clientRequest);
+        var clientResponse = await apiClient.SendAsync(clientRequest);
         var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
 
         Console.WriteLine($"\n== Response Status: {(int)clientResponse.StatusCode} ==");
