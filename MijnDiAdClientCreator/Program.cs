@@ -94,9 +94,9 @@ class Program
         
         foreach (Cookie cookie in cookies)
         {
-            // Add all cookies to the cookie string
+            // Add all cookies to the cookie string IN THEIR ORIGINAL ENCODED FORM
             if (allCookies.Length > 0) allCookies.Append("; ");
-            allCookies.Append($"{cookie.Name}={Uri.UnescapeDataString(cookie.Value)}");
+            allCookies.Append($"{cookie.Name}={cookie.Value}");  // Keep URL-encoded!
             
             // Track specific important cookies
             if (cookie.Name == $"{tenant}_session")
@@ -106,6 +106,7 @@ class Program
             }
             if (cookie.Name == "XSRF-TOKEN")
             {
+                // Only decode for the header, not for the cookie string
                 xsrfToken = Uri.UnescapeDataString(cookie.Value);
                 Console.WriteLine($"  ✓ XSRF token: {xsrfToken.Substring(0, Math.Min(20, xsrfToken.Length))}... (length: {xsrfToken.Length})");
             }
@@ -148,7 +149,7 @@ class Program
             foreach (Cookie cookie in cookies)
             {
                 if (allCookies.Length > 0) allCookies.Append("; ");
-                allCookies.Append($"{cookie.Name}={Uri.UnescapeDataString(cookie.Value)}");
+                allCookies.Append($"{cookie.Name}={cookie.Value}");  // Keep URL-encoded!
             }
             
             fullCookieHeader = allCookies.ToString();
