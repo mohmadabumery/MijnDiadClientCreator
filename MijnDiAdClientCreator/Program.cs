@@ -61,26 +61,37 @@ class Program
     /* ---------------- LOGIN ---------------- */
 
     static async Task Login(HttpClient client, string tenant, string email, string password, string totpSecret)
+{
+    Console.WriteLine("[2/4] Logging in (browser-style)...");
+
+    var form = new Dictionary<string, string>
     {
-        Console.WriteLine("[2/4] Logging in...");
+        ["email"] = email,
+        ["password"] = password,
+        ["totp_code"] = GenerateTotp(totpSecret)
+    };
 
-        var payload = new
-        {
-            email,
-            password,
-            totp_code = GenerateTotp(totpSecret)
-        };
+    var content = new FormUrlEncodedContent(form);
 
-        var resp = await client.PostAsync(
-            $"https://{tenant}.mijndiad.nl/api/login",
-            new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-        );
+    client.DefaultRequestHeaders.Clear();
+    client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml,application/xml");
+    client.DefaultRequestHeaders.Add("Referer", $"https://{tenant}.mijndiad.nl/login");
 
-        if (!resp.IsSuccessStatusCode)
-            throw new Exception("Login failed");
+    var response = await client.PostAsync(
+        $"https://{tenant}.mijndiad.nl/login",
+        content
+    );
 
-        Console.WriteLine("✓ Login successful");
+    if (!response.IsSuccessStatusCode)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        Console.WriteLine(body);
+        throw new Exception("Login failed");
     }
+
+    Console.WriteLine("✓ Login successful");
+}
+
 
     /* ---------------- CREATE CLIENT ---------------- */
 
