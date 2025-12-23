@@ -27,19 +27,24 @@ class Program
         Console.WriteLine("== MijnDiAd Auto-Login & Client Creation ==");
 
         var cookieContainer = new CookieContainer();
-        var handler = new HttpClientHandler { CookieContainer = cookieContainer, UseCookies = true, AutomaticDecompression = DecompressionMethods.All };
+        var handler = new HttpClientHandler 
+        { 
+            CookieContainer = cookieContainer, 
+            UseCookies = true, 
+            AutomaticDecompression = DecompressionMethods.All 
+        };
 
         using var client = new HttpClient(handler);
         client.Timeout = TimeSpan.FromSeconds(30);
 
         // 1️⃣ FETCH LOGIN PAGE
-        Console.WriteLine("[1/4] Fetching login page...");
+        Console.WriteLine("[1/5] Fetching login page...");
         var loginPageResponse = await client.GetAsync($"https://{tenant}.mijndiad.nl/login");
         loginPageResponse.EnsureSuccessStatusCode();
         var loginPageHtml = await loginPageResponse.Content.ReadAsStringAsync();
 
         // 2️⃣ EXTRACT CSRF TOKEN
-        Console.WriteLine("[2/4] Extracting CSRF token...");
+        Console.WriteLine("[2/5] Extracting CSRF token...");
         var csrfMatch = Regex.Match(loginPageHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
         if (!csrfMatch.Success)
         {
@@ -47,9 +52,12 @@ class Program
             Environment.Exit(1);
         }
         var csrfToken = csrfMatch.Groups[1].Value;
+        Console.WriteLine($"  ✓ CSRF token extracted");
 
         // 3️⃣ LOGIN
-        Console.WriteLine("[3/4] Logging in...");
+        Console.WriteLine("[3/5] Logging in...");
+        Console.WriteLine($"  Generated TOTP: {totp}");
+        
         client.DefaultRequestHeaders.Clear();
         client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
@@ -67,6 +75,7 @@ class Program
 
         var loginResponse = await client.PostAsync($"https://{tenant}.mijndiad.nl/api/login", loginContent);
         var loginBody = await loginResponse.Content.ReadAsStringAsync();
+        
         if (!loginResponse.IsSuccessStatusCode)
         {
             Console.WriteLine($"❌ Login failed: {(int)loginResponse.StatusCode}");
@@ -74,14 +83,26 @@ class Program
             Environment.Exit(1);
         }
 
+        Console.WriteLine($"  ✓ Login successful");
+
         // 4️⃣ EXTRACT SESSION COOKIES
-        Console.WriteLine("[4/4] Extracting session cookies...");
+        Console.WriteLine("[4/5] Extracting session cookies...");
         var cookies = cookieContainer.GetCookies(new Uri($"https://{tenant}.mijndiad.nl"));
-        string sessionCookie = null, xsrfToken = null;
+        string sessionCookie = null;
+        string xsrfToken = null;
+        
         foreach (Cookie cookie in cookies)
         {
-            if (cookie.Name == $"{tenant}_session") sessionCookie = cookie.Value;
-            if (cookie.Name == "XSRF-TOKEN") xsrfToken = cookie.Value;
+            if (cookie.Name == $"{tenant}_session")
+            {
+                sessionCookie = cookie.Value;
+                Console.WriteLine($"  ✓ Session cookie: {sessionCookie.Substring(0, 20)}...");
+            }
+            if (cookie.Name == "XSRF-TOKEN")
+            {
+                xsrfToken = cookie.Value;
+                Console.WriteLine($"  ✓ XSRF token: {xsrfToken.Substring(0, 20)}...");
+            }
         }
 
         if (string.IsNullOrEmpty(sessionCookie) || string.IsNullOrEmpty(xsrfToken))
@@ -90,44 +111,53 @@ class Program
             Environment.Exit(1);
         }
 
-        Console.WriteLine("✓ Login successful, cookies ready");
-
         // 5️⃣ CREATE CLIENT
         Console.WriteLine("[5/5] Creating client...");
-        var clientRequest = new HttpRequestMessage(HttpMethod.Post, $"https://{tenant}.mijndiad.nl/api/clients");
-        clientRequest.Content = new StringContent(clientJson, Encoding.UTF8, "application/json");
-        clientRequest.Headers.Add("X-XSRF-TOKEN", xsrfToken);
-        clientRequest.Headers.Add("Cookie", $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
+        
+        // Reset headers for API call
+        client.DefaultRequestHeaders.Clear();
+        client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
+        client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", xsrfToken);
+        client.DefaultRequestHeaders.Add("Origin", $"https://{tenant}.mijndiad.nl");
+        client.DefaultRequestHeaders.Add("Referer", $"https://{tenant}.mijndiad.nl/clients/create");
 
-        var clientResponse = await client.SendAsync(clientRequest);
+        var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
+        var clientResponse = await client.PostAsync($"https://{tenant}.mijndiad.nl/api/clients", clientContent);
         var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
+
+        Console.WriteLine($"\n== Response Status: {(int)clientResponse.StatusCode} ==");
+        Console.WriteLine(clientResponseBody);
 
         if (clientResponse.IsSuccessStatusCode)
         {
-            Console.WriteLine("✅ Client created successfully!");
+            Console.WriteLine("\n✅✅✅ SUCCESS! Client created in MijnDiAd EPD ✅✅✅");
         }
         else
         {
-            Console.WriteLine("❌ Client creation failed");
-            Console.WriteLine(clientResponseBody);
+            Console.WriteLine("\n❌ Client creation failed");
             Environment.Exit(1);
         }
     }
 
     static string GenerateTotp(string base32Secret)
     {
-        if (string.IsNullOrEmpty(base32Secret)) return "000000"; // fallback
+        if (string.IsNullOrEmpty(base32Secret)) return "000000";
+        
         var key = Base32Decode(base32Secret);
         var timestep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
         var data = BitConverter.GetBytes(timestep);
         if (BitConverter.IsLittleEndian) Array.Reverse(data);
+        
         using var hmac = new System.Security.Cryptography.HMACSHA1(key);
         var hash = hmac.ComputeHash(data);
+        
         int offset = hash[^1] & 0x0F;
         int binary = ((hash[offset] & 0x7F) << 24) |
                      ((hash[offset + 1] & 0xFF) << 16) |
                      ((hash[offset + 2] & 0xFF) << 8) |
                      (hash[offset + 3] & 0xFF);
+        
         return (binary % 1_000_000).ToString("D6");
     }
 
@@ -139,7 +169,10 @@ class Program
 
         foreach (char c in input.TrimEnd('='))
         {
-            bitBuffer = (bitBuffer << 5) | alphabet.IndexOf(c);
+            int charIndex = alphabet.IndexOf(c);
+            if (charIndex < 0) continue;
+            
+            bitBuffer = (bitBuffer << 5) | charIndex;
             bitCount += 5;
 
             if (bitCount >= 8)
