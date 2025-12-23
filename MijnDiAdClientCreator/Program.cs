@@ -29,39 +29,66 @@ class Program
         var handler = new HttpClientHandler
         {
             CookieContainer = cookies,
-            UseCookies = true,
             AutomaticDecompression = DecompressionMethods.All
         };
 
         using var client = new HttpClient(handler);
+        client.Timeout = TimeSpan.FromSeconds(30);
 
-        /* -------------------- 1. GET LOGIN PAGE -------------------- */
+        // 🔁 One retry allowed if CSRF expires
+        for (int attempt = 1; attempt <= 2; attempt++)
+        {
+            Console.WriteLine($"\n--- Attempt {attempt} ---");
+
+            string csrf = await LoginAndGetCsrf(client, tenant, username, password, totpSecret);
+
+            bool success = await CreateClient(client, tenant, csrf, clientJson);
+
+            if (success)
+            {
+                Console.WriteLine("\n✅ Client created successfully");
+                return;
+            }
+
+            Console.WriteLine("⚠ CSRF/session expired — retrying login...");
+        }
+
+        throw new Exception("❌ Client creation failed after retry");
+    }
+
+    /* ---------------- LOGIN + CSRF ---------------- */
+
+    static async Task<string> LoginAndGetCsrf(
+        HttpClient client,
+        string tenant,
+        string username,
+        string password,
+        string totpSecret)
+    {
+        // 1️⃣ Fetch login page
         Console.WriteLine("[1/4] Fetching login page...");
-        var loginPage = await client.GetStringAsync($"https://{tenant}.mijndiad.nl/login");
+        string loginHtml = await client.GetStringAsync($"https://{tenant}.mijndiad.nl/login");
 
-        var csrf = Regex.Match(loginPage, "csrf-token\" content=\"([^\"]+)\"").Groups[1].Value;
-        if (string.IsNullOrEmpty(csrf)) throw new Exception("CSRF not found");
+        string csrf = ExtractCsrf(loginHtml);
 
-        Console.WriteLine("✓ CSRF token extracted");
-
-        /* -------------------- 2. LOGIN -------------------- */
+        // 2️⃣ Login
         Console.WriteLine("[2/4] Logging in...");
-
         client.DefaultRequestHeaders.Clear();
-        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", csrf);
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
-        client.DefaultRequestHeaders.Add("Accept", "application/json");
+        client.DefaultRequestHeaders.Add("x-csrf-token", csrf);
+        client.DefaultRequestHeaders.Referrer =
+            new Uri($"https://{tenant}.mijndiad.nl/login");
 
-        var loginPayload = JsonSerializer.Serialize(new
+        var loginPayload = new
         {
             email = username,
             password = password,
             totp_code = GenerateTotp(totpSecret)
-        });
+        };
 
         var loginResp = await client.PostAsync(
             $"https://{tenant}.mijndiad.nl/api/login",
-            new StringContent(loginPayload, Encoding.UTF8, "application/json")
+            new StringContent(JsonSerializer.Serialize(loginPayload), Encoding.UTF8, "application/json")
         );
 
         if (!loginResp.IsSuccessStatusCode)
@@ -69,47 +96,70 @@ class Program
 
         Console.WriteLine("✓ Login successful");
 
-        /* -------------------- 3. VISIT DASHBOARD -------------------- */
+        // 3️⃣ Visit dashboard → refresh CSRF
         Console.WriteLine("[3/4] Visiting dashboard...");
+        string dashboardHtml = await client.GetStringAsync(
+            $"https://{tenant}.mijndiad.nl/dashboard");
 
-        var dashHtml = await client.GetStringAsync($"https://{tenant}.mijndiad.nl/dashboard");
-
-        var xsrf = Regex.Match(dashHtml, "csrf-token\" content=\"([^\"]+)\"").Groups[1].Value;
-        if (string.IsNullOrEmpty(xsrf)) throw new Exception("XSRF not found");
-
+        csrf = ExtractCsrf(dashboardHtml);
         Console.WriteLine("✓ CSRF refreshed from dashboard");
 
-        /* -------------------- 4. CREATE CLIENT -------------------- */
-Console.WriteLine("[4/4] Creating client...");
+        return csrf;
+    }
 
-client.DefaultRequestHeaders.Clear();
+    /* ---------------- CREATE CLIENT ---------------- */
 
-// 🔑 THIS is what MijnDiAd expects
-client.DefaultRequestHeaders.Add("x-csrf-token", xsrf);
-client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
-client.DefaultRequestHeaders.Add("Accept", "application/json");
-client.DefaultRequestHeaders.Add("Origin", $"https://{tenant}.mijndiad.nl");
-client.DefaultRequestHeaders.Referrer =
-    new Uri($"https://{tenant}.mijndiad.nl/clients/create");
+    static async Task<bool> CreateClient(
+        HttpClient client,
+        string tenant,
+        string csrf,
+        string clientJson)
+    {
+        Console.WriteLine("[4/4] Creating client...");
 
-var resp = await client.PostAsync(
-    $"https://{tenant}.mijndiad.nl/api/clients",
-    new StringContent(clientJson, Encoding.UTF8, "application/json")
-);
+        client.DefaultRequestHeaders.Clear();
+        client.DefaultRequestHeaders.Add("x-csrf-token", csrf); // 🔑 CORRECT HEADER
+        client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+        client.DefaultRequestHeaders.Add("Accept", "application/json");
+        client.DefaultRequestHeaders.Referrer =
+            new Uri($"https://{tenant}.mijndiad.nl/clients/create");
 
-var body = await resp.Content.ReadAsStringAsync();
+        var resp = await client.PostAsync(
+            $"https://{tenant}.mijndiad.nl/api/clients",
+            new StringContent(clientJson, Encoding.UTF8, "application/json")
+        );
 
-Console.WriteLine($"== STATUS {(int)resp.StatusCode} ==");
-Console.WriteLine(body);
+        string body = await resp.Content.ReadAsStringAsync();
 
-if (!resp.IsSuccessStatusCode)
-    throw new Exception("❌ Client creation failed");
+        Console.WriteLine($"== STATUS {(int)resp.StatusCode} ==");
+        Console.WriteLine(body);
 
-Console.WriteLine("✅ Client created successfully");
+        if (resp.IsSuccessStatusCode)
+            return true;
 
-    static string GetEnv(string key) =>
-        Environment.GetEnvironmentVariable(key)
-        ?? throw new Exception($"{key} not set");
+        // Laravel CSRF/session expiry responses
+        if ((int)resp.StatusCode == 401 || (int)resp.StatusCode == 419 || (int)resp.StatusCode == 422)
+            return false;
+
+        throw new Exception("Unexpected API error");
+    }
+
+    /* ---------------- HELPERS ---------------- */
+
+    static string ExtractCsrf(string html)
+    {
+        var match = Regex.Match(html,
+            "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
+        if (!match.Success)
+            throw new Exception("CSRF token not found");
+        return match.Groups[1].Value;
+    }
+
+    static string GetEnv(string name)
+        => Environment.GetEnvironmentVariable(name)
+           ?? throw new Exception($"{name} not set");
+
+    /* ---------------- TOTP ---------------- */
 
     static string GenerateTotp(string secret)
     {
@@ -134,20 +184,20 @@ Console.WriteLine("✅ Client created successfully");
     static byte[] Base32Decode(string input)
     {
         const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        int buffer = 0, bits = 0, index = 0;
+        int bits = 0, value = 0, index = 0;
         var output = new byte[input.Length * 5 / 8];
 
         foreach (char c in input.TrimEnd('='))
         {
-            int val = alphabet.IndexOf(c);
-            if (val < 0) continue;
+            int idx = alphabet.IndexOf(c);
+            if (idx < 0) continue;
 
-            buffer = (buffer << 5) | val;
+            value = (value << 5) | idx;
             bits += 5;
 
             if (bits >= 8)
             {
-                output[index++] = (byte)(buffer >> (bits - 8));
+                output[index++] = (byte)(value >> (bits - 8));
                 bits -= 8;
             }
         }
