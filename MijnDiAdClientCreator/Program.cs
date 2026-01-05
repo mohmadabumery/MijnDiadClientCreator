@@ -1,31 +1,30 @@
 using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.IO;
+using OtpNet;
 
 class Program
 {
-    static async Task<int> Main(string[] args)
+    static async Task Main(string[] args)
     {
         Console.WriteLine("=== MijnDiAd Client Creator ===");
 
-        string jsonPath = GetArg(args, "--json-file");
-        if (string.IsNullOrEmpty(jsonPath) || !File.Exists(jsonPath))
+        string jsonPath = "client_data.json";
+        if (!File.Exists(jsonPath))
         {
-            Console.WriteLine("❌ Missing or invalid --json-file");
-            return 1;
+            Console.WriteLine("❌ client_data.json not found");
+            Environment.Exit(1);
         }
 
-        string clientJson = File.ReadAllText(jsonPath);
-        Console.WriteLine($"Read JSON from {jsonPath} ({clientJson.Length} chars)");
+        string clientJson = await File.ReadAllTextAsync(jsonPath);
 
-        using var doc = JsonDocument.Parse(clientJson);
-        Console.WriteLine("✓ JSON is valid");
+        // Validate JSON early
+        JsonSerializer.Deserialize<JsonElement>(clientJson);
 
         string tenant = Env("MIJNDIAD_TENANT");
         string username = Env("MIJNDIAD_USERNAME");
@@ -39,141 +38,138 @@ class Program
         var handler = new HttpClientHandler
         {
             CookieContainer = cookies,
-            AllowAutoRedirect = true,
+            UseCookies = true,
+            AllowAutoRedirect = false,
             AutomaticDecompression = DecompressionMethods.All
         };
 
         using var client = new HttpClient(handler);
-        client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
+        client.DefaultRequestHeaders.Add(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        );
 
-        /* ---------------------------------------------------------
-         * 1. LOGIN
-         * ---------------------------------------------------------*/
+        // 1️⃣ LOGIN (JSON, SAME AS BEFORE)
         Console.WriteLine("[1/6] Logging in...");
         await Login(client, baseUrl, username, password, totpSecret);
         Console.WriteLine("✓ Login successful");
 
-        /* ---------------------------------------------------------
-         * 2. SANCTUM INIT
-         * ---------------------------------------------------------*/
+        // 2️⃣ SANCTUM
         Console.WriteLine("[2/6] Initializing Sanctum...");
         await client.GetAsync($"{baseUrl}/sanctum/csrf-cookie");
 
-        /* ---------------------------------------------------------
-         * 3. LOAD CREATE FORM (GET REAL CSRF)
-         * ---------------------------------------------------------*/
+        // 3️⃣ LOAD CREATE FORM (FRESH CSRF)
         Console.WriteLine("[3/6] Loading create form...");
-        var createPage = await client.GetStringAsync($"{baseUrl}/clients/create");
-        string csrfToken = ExtractCsrf(createPage);
-        if (string.IsNullOrEmpty(csrfToken))
-            throw new Exception("Failed to extract CSRF token");
+        var formPage = await client.GetAsync($"{baseUrl}/clients/create");
+        var html = await formPage.Content.ReadAsStringAsync();
 
+        var csrfMatch = Regex.Match(
+            html,
+            "<meta name=\"csrf-token\" content=\"([^\"]+)\""
+        );
+
+        if (!csrfMatch.Success)
+            throw new Exception("Fresh CSRF token not found");
+
+        string csrfToken = csrfMatch.Groups[1].Value;
         Console.WriteLine($"✓ Fresh CSRF token ({csrfToken.Length} chars)");
 
-        /* ---------------------------------------------------------
-         * 4. BIND API SESSION
-         * ---------------------------------------------------------*/
+        // 4️⃣ BIND API SESSION
         Console.WriteLine("[4/6] Binding API session...");
-        var userResp = await client.GetAsync($"{baseUrl}/api/user");
-        if (!userResp.IsSuccessStatusCode)
+        var userCheck = await client.GetAsync($"{baseUrl}/api/user");
+        if (!userCheck.IsSuccessStatusCode)
             throw new Exception("API session binding failed");
-
         Console.WriteLine("✓ API session bound");
 
-        /* ---------------------------------------------------------
-         * 5. BUILD PAYLOAD (IMPORTANT FIX)
-         * ---------------------------------------------------------*/
+        // 5️⃣ PREPARE PAYLOAD
         Console.WriteLine("[5/6] Preparing payload...");
-        var formFields = BuildForm(clientJson, csrfToken);
+        var jsonContent = new StringContent(
+            clientJson,
+            Encoding.UTF8,
+            "application/json"
+        );
 
-        var content = new FormUrlEncodedContent(formFields);
-
-        /* ---------------------------------------------------------
-         * 6. CREATE CLIENT
-         * ---------------------------------------------------------*/
+        // 6️⃣ CREATE CLIENT
         Console.WriteLine("[6/6] Creating client...");
-        var resp = await client.PostAsync($"{baseUrl}/api/clients", content);
+        var createReq = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{baseUrl}/api/clients"
+        );
+        createReq.Content = jsonContent;
+        createReq.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        createReq.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        createReq.Headers.Add("Accept", "application/json");
+        createReq.Headers.Referrer = new Uri($"{baseUrl}/clients/create");
 
-        Console.WriteLine($"Status: {resp.StatusCode}");
-        string body = await resp.Content.ReadAsStringAsync();
+        var response = await client.SendAsync(createReq);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Console.WriteLine($"Status: {response.StatusCode}");
         Console.WriteLine(body);
 
-        if (!resp.IsSuccessStatusCode)
+        if (!response.IsSuccessStatusCode)
         {
             Console.WriteLine("❌ Client creation failed");
-            return 1;
+            Environment.Exit(1);
         }
 
         Console.WriteLine("✅ Client successfully created");
-        return 0;
     }
 
-    /* ============================================================
-     * HELPERS
-     * ============================================================*/
-
-    static async Task Login(HttpClient client, string baseUrl, string user, string pass, string totpSecret)
+    // ===== LOGIN (DO NOT TOUCH) =====
+    static async Task Login(
+        HttpClient client,
+        string baseUrl,
+        string username,
+        string password,
+        string totpSecret
+    )
     {
-        string loginPage = await client.GetStringAsync($"{baseUrl}/login");
-        string csrf = ExtractCsrf(loginPage);
+        var loginPage = await client.GetAsync($"{baseUrl}/login");
+        var html = await loginPage.Content.ReadAsStringAsync();
 
-        var data = new Dictionary<string, string>
+        var csrfMatch = Regex.Match(
+            html,
+            "<meta name=\"csrf-token\" content=\"([^\"]+)\""
+        );
+
+        if (!csrfMatch.Success)
+            throw new Exception("Login CSRF not found");
+
+        string csrf = csrfMatch.Groups[1].Value;
+
+        var payload = new
         {
-            ["_token"] = csrf,
-            ["email"] = user,
-            ["password"] = pass,
-            ["totp"] = GenerateTotp(totpSecret)
+            email = username,
+            password = password,
+            totp_code = GenerateTotp(totpSecret)
         };
 
-        var resp = await client.PostAsync($"{baseUrl}/login", new FormUrlEncodedContent(data));
-        if (!resp.IsSuccessStatusCode)
-            throw new Exception("Login failed");
-    }
+        var req = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{baseUrl}/api/login"
+        );
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(payload),
+            Encoding.UTF8,
+            "application/json"
+        );
+        req.Headers.Add("X-CSRF-TOKEN", csrf);
+        req.Headers.Add("X-Requested-With", "XMLHttpRequest");
 
-    static Dictionary<string, string> BuildForm(string json, string csrfToken)
-    {
-        var dict = new Dictionary<string, string>
+        var res = await client.SendAsync(req);
+
+        if (!res.IsSuccessStatusCode)
         {
-            // 🔑 REQUIRED HIDDEN FIELDS (THE FIX)
-            ["_token"] = csrfToken,
-            ["_method"] = "POST",
-            ["submit_type"] = "save",
-            ["wizard_step"] = "final"
-        };
-
-        using var doc = JsonDocument.Parse(json);
-        FlattenJson("", doc.RootElement, dict);
-        return dict;
-    }
-
-    static void FlattenJson(string prefix, JsonElement el, Dictionary<string, string> dict)
-    {
-        if (el.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var p in el.EnumerateObject())
-                FlattenJson($"{prefix}{p.Name}.", p.Value, dict);
+            var body = await res.Content.ReadAsStringAsync();
+            throw new Exception($"Login failed: {res.StatusCode}\n{body}");
         }
-        else if (el.ValueKind == JsonValueKind.Array)
-        {
-            int i = 0;
-            foreach (var v in el.EnumerateArray())
-                FlattenJson($"{prefix}{i++}.", v, dict);
-        }
-        else
-        {
-            dict[prefix.TrimEnd('.')] = el.ToString();
-        }
-    }
-
-    static string ExtractCsrf(string html)
-    {
-        var m = Regex.Match(html, "name=\"_token\" value=\"([^\"]+)\"");
-        return m.Success ? m.Groups[1].Value : "";
     }
 
     static string GenerateTotp(string secret)
     {
-        var totp = new OtpNet.Totp(OtpNet.Base32Encoding.ToBytes(secret));
+        var bytes = Base32Encoding.ToBytes(secret);
+        var totp = new Totp(bytes);
         return totp.ComputeTotp();
     }
 
@@ -183,13 +179,5 @@ class Program
         if (string.IsNullOrEmpty(v))
             throw new Exception($"Missing env var: {name}");
         return v;
-    }
-
-    static string GetArg(string[] args, string name)
-    {
-        for (int i = 0; i < args.Length - 1; i++)
-            if (args[i] == name)
-                return args[i + 1];
-        return null;
     }
 }
