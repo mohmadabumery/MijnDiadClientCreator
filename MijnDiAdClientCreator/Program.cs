@@ -11,149 +11,177 @@ class Program
     static async Task Main(string[] args)
     {
         if (args.Length < 2 || args[0] != "--json")
-            throw new Exception("Usage: --json '{...}'");
+        {
+            Console.WriteLine("Usage: dotnet run -- --json '{\"firstname\":\"John\", ...}'");
+            return;
+        }
 
         string clientJson = args[1];
 
-        var tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT")!;
-        var username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME")!;
-        var password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD")!;
-        var totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET")!;
+        var tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? throw new Exception("MIJNDIAD_TENANT not set");
+        var username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME") ?? throw new Exception("MIJNDIAD_USERNAME not set");
+        var password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD") ?? throw new Exception("MIJNDIAD_PASSWORD not set");
+        var totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET") ?? throw new Exception("MIJNDIAD_TOTP_SECRET not set");
+        var totp = GenerateTotp(totpSecret);
 
         var baseUrl = $"https://{tenant}.mijndiad.nl";
 
         Console.WriteLine("== MijnDiAd Auto-Login & Client Creation ==");
         Console.WriteLine($"Running on: {Environment.MachineName}");
 
-        var cookies = new CookieContainer();
+        var cookieContainer = new CookieContainer();
         var handler = new HttpClientHandler
         {
-            CookieContainer = cookies,
+            CookieContainer = cookieContainer,
             UseCookies = true,
             AutomaticDecompression = DecompressionMethods.All
         };
 
-        using var client = new HttpClient(handler)
-        {
-            BaseAddress = new Uri(baseUrl)
-        };
+        using var client = new HttpClient(handler);
+        client.Timeout = TimeSpan.FromSeconds(30);
 
         // 1️⃣ Fetch login page
         Console.WriteLine("[1/6] Fetching login page...");
-        var loginHtml = await client.GetStringAsync("/login");
+        var loginPageResponse = await client.GetAsync($"{baseUrl}/login");
+        loginPageResponse.EnsureSuccessStatusCode();
+        var loginPageHtml = await loginPageResponse.Content.ReadAsStringAsync();
 
-        // 2️⃣ Extract CSRF
+        // 2️⃣ Extract CSRF token
         Console.WriteLine("[2/6] Extracting CSRF token...");
-        var csrf = Regex.Match(loginHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"")
-                        .Groups[1].Value;
+        var csrfMatch = Regex.Match(loginPageHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
+        if (!csrfMatch.Success)
+        {
+            Console.WriteLine("❌ CSRF token not found");
+            Environment.Exit(1);
+        }
+        var csrfToken = csrfMatch.Groups[1].Value;
+        Console.WriteLine("  ✓ CSRF token extracted");
 
         // 3️⃣ Login
         Console.WriteLine("[3/6] Logging in...");
-        var totp = GenerateTotp(totpSecret);
+        Console.WriteLine($"  Generated TOTP: {totp}");
 
         client.DefaultRequestHeaders.Clear();
-        client.DefaultRequestHeaders.Add("Accept", "application/json");
-        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", csrf);
+        client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", csrfToken);
         client.DefaultRequestHeaders.Add("Origin", baseUrl);
         client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/login");
 
-        var loginResponse = await client.PostAsync(
-            "/api/login",
-            new StringContent(JsonSerializer.Serialize(new
-            {
-                email = username,
-                password = password,
-                totp_code = totp
-            }), Encoding.UTF8, "application/json")
-        );
+        var loginPayload = new
+        {
+            email = username,
+            password = password,
+            totp_code = totp
+        };
+        var loginContent = new StringContent(JsonSerializer.Serialize(loginPayload), Encoding.UTF8, "application/json");
+        var loginResponse = await client.PostAsync($"{baseUrl}/api/login", loginContent);
+        var loginBody = await loginResponse.Content.ReadAsStringAsync();
 
-        loginResponse.EnsureSuccessStatusCode();
+        if (!loginResponse.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"❌ Login failed: {(int)loginResponse.StatusCode}");
+            Console.WriteLine(loginBody);
+            Environment.Exit(1);
+        }
         Console.WriteLine("  ✓ Login successful");
 
-        // 4️⃣ Sanctum CSRF cookie
+        // 4️⃣ Refresh Sanctum CSRF cookie
         Console.WriteLine("[4/6] Refreshing Sanctum CSRF...");
-        var sanctum = await client.GetAsync("/sanctum/csrf-cookie");
-        sanctum.EnsureSuccessStatusCode();
+        var sanctumResponse = await client.GetAsync($"{baseUrl}/sanctum/csrf-cookie");
+        sanctumResponse.EnsureSuccessStatusCode();
         Console.WriteLine("  ✓ Sanctum CSRF refreshed");
 
-        // 5️⃣ Extract XSRF token
+        // 5️⃣ Extract cookies
         Console.WriteLine("[5/6] Extracting cookies...");
-        var jar = cookies.GetCookies(new Uri(baseUrl));
+        var cookies = cookieContainer.GetCookies(new Uri(baseUrl));
+        string xsrf = null, session = null;
 
-        string xsrf = null!;
-        foreach (Cookie c in jar)
-            if (c.Name == "XSRF-TOKEN")
-                xsrf = Uri.UnescapeDataString(c.Value);
+        foreach (Cookie c in cookies)
+        {
+            if (c.Name == "XSRF-TOKEN") xsrf = c.Value;
+            if (c.Name == $"{tenant}_session") session = c.Value;
+        }
 
-        if (xsrf == null)
-            throw new Exception("XSRF token missing");
+        if (string.IsNullOrEmpty(xsrf) || string.IsNullOrEmpty(session))
+        {
+            Console.WriteLine("❌ Required cookies missing");
+            Environment.Exit(1);
+        }
 
-        // 6️⃣ Create client (🚨 browser-like headers)
-        Console.WriteLine("[6/6] Creating client...");
+        Console.WriteLine($"  ✓ Session cookie length: {session.Length}");
+        Console.WriteLine($"  ✓ XSRF token length: {xsrf.Length}");
 
+        // 6️⃣ Bind session to API (important for Sanctum)
+        Console.WriteLine("[6/7] Binding session to API (/api/user)...");
         client.DefaultRequestHeaders.Clear();
         client.DefaultRequestHeaders.Add("Accept", "application/json");
         client.DefaultRequestHeaders.Add("X-XSRF-TOKEN", xsrf);
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
         client.DefaultRequestHeaders.Add("Origin", baseUrl);
-        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/clients");
+        client.DefaultRequestHeaders.Add("Referer", baseUrl);
 
-        var create = await client.PostAsync(
-            "/api/clients",
-            new StringContent(clientJson, Encoding.UTF8, "application/json")
-        );
+        var userBind = await client.GetAsync($"{baseUrl}/api/user");
+        userBind.EnsureSuccessStatusCode();
+        Console.WriteLine("  ✓ API session bound");
 
-        var body = await create.Content.ReadAsStringAsync();
-        Console.WriteLine($"== Response Status: {(int)create.StatusCode} ==");
-        Console.WriteLine(body);
+        // 7️⃣ Create client
+        Console.WriteLine("[7/7] Creating client...");
+        var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
+        var clientResponse = await client.PostAsync($"{baseUrl}/api/clients", clientContent);
+        var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
 
-        if (!create.IsSuccessStatusCode)
-            throw new Exception("Client creation failed");
+        Console.WriteLine($"\n== Response Status: {(int)clientResponse.StatusCode} ==");
+        Console.WriteLine(clientResponseBody);
 
-        Console.WriteLine("✅ SUCCESS: Client created in MijnDiAd");
+        if (!clientResponse.IsSuccessStatusCode)
+        {
+            Console.WriteLine("\n❌ Client creation failed");
+            Environment.Exit(1);
+        }
+
+        Console.WriteLine("\n✅✅✅ SUCCESS! Client created in MijnDiAd EPD ✅✅✅");
     }
 
-    static string GenerateTotp(string secret)
+    static string GenerateTotp(string base32Secret)
     {
-        var key = Base32Decode(secret);
-        var counter = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
-        var data = BitConverter.GetBytes(counter);
+        if (string.IsNullOrEmpty(base32Secret)) return "000000";
+
+        var key = Base32Decode(base32Secret);
+        var timestep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
+        var data = BitConverter.GetBytes(timestep);
         if (BitConverter.IsLittleEndian) Array.Reverse(data);
 
         using var hmac = new System.Security.Cryptography.HMACSHA1(key);
         var hash = hmac.ComputeHash(data);
-        int offset = hash[^1] & 0x0F;
 
-        int binary =
-            ((hash[offset] & 0x7F) << 24) |
-            ((hash[offset + 1] & 0xFF) << 16) |
-            ((hash[offset + 2] & 0xFF) << 8) |
-            (hash[offset + 3] & 0xFF);
+        int offset = hash[^1] & 0x0F;
+        int binary = ((hash[offset] & 0x7F) << 24) |
+                     ((hash[offset + 1] & 0xFF) << 16) |
+                     ((hash[offset + 2] & 0xFF) << 8) |
+                     (hash[offset + 3] & 0xFF);
 
         return (binary % 1_000_000).ToString("D6");
     }
 
     static byte[] Base32Decode(string input)
     {
-        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        var buffer = 0;
-        var bits = 0;
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
         var output = new byte[input.Length * 5 / 8];
-        int index = 0;
+        int bitBuffer = 0, bitCount = 0, index = 0;
 
         foreach (char c in input.TrimEnd('='))
         {
-            int val = chars.IndexOf(c);
-            if (val < 0) continue;
+            int charIndex = alphabet.IndexOf(c);
+            if (charIndex < 0) continue;
 
-            buffer = (buffer << 5) | val;
-            bits += 5;
+            bitBuffer = (bitBuffer << 5) | charIndex;
+            bitCount += 5;
 
-            if (bits >= 8)
+            if (bitCount >= 8)
             {
-                output[index++] = (byte)(buffer >> (bits - 8));
-                bits -= 8;
+                output[index++] = (byte)(bitBuffer >> (bitCount - 8));
+                bitCount -= 8;
             }
         }
 
