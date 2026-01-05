@@ -7,12 +7,15 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
 using OtpNet;
 
 class Program
 {
     static async Task Main(string[] args)
     {
+        string clientJson;
+        
         // Debug: Show what args we received
         Console.WriteLine($"Received {args.Length} arguments:");
         for (int i = 0; i < args.Length; i++)
@@ -20,25 +23,43 @@ class Program
             Console.WriteLine($"  args[{i}] = '{args[i]}'");
         }
 
-        if (args.Length < 2 || args[0] != "--json")
+        // Handle different input methods
+        if (args.Length >= 2 && args[0] == "--json")
         {
-            Console.WriteLine("Usage: dotnet run -- --json '{\"firstname\":\"John\", ...}'");
-            Console.WriteLine("Or: dotnet run -- --json \"{\\\"firstname\\\":\\\"John\\\", ...}\"");
+            clientJson = args[1];
+            Console.WriteLine($"Using JSON from command line argument");
+        }
+        else if (args.Length >= 2 && args[0] == "--json-file")
+        {
+            // Read from file
+            string filePath = args[1];
+            Console.WriteLine($"Reading JSON from file: {filePath}");
+            if (!File.Exists(filePath))
+            {
+                Console.WriteLine($"❌ File not found: {filePath}");
+                Environment.Exit(1);
+            }
+            clientJson = await File.ReadAllTextAsync(filePath);
+            Console.WriteLine($"Read {clientJson.Length} characters from file");
+        }
+        else if (File.Exists("client_data.json"))
+        {
+            // Read from default file
+            Console.WriteLine("Reading JSON from default file: client_data.json");
+            clientJson = await File.ReadAllTextAsync("client_data.json");
+        }
+        else
+        {
+            Console.WriteLine("Usage options:");
+            Console.WriteLine("  dotnet run -- --json '{{\\\"firstname\\\":\\\"John\\\", ...}}'");
+            Console.WriteLine("  dotnet run -- --json-file data.json");
+            Console.WriteLine("  Place JSON in client_data.json and run without args");
             return;
         }
 
-        string clientJson = args[1];
-        Console.WriteLine($"Raw JSON input length: {clientJson.Length}");
-        Console.WriteLine($"First 100 chars: {clientJson.Substring(0, Math.Min(100, clientJson.Length))}");
-
-        // Try to clean the JSON if it has issues
-        if (clientJson.StartsWith("'") && clientJson.EndsWith("'"))
-        {
-            Console.WriteLine("Removing single quotes from JSON...");
-            clientJson = clientJson.Trim('\'');
-        }
-
-        // Try to parse JSON to validate it
+        Console.WriteLine($"\nJSON length: {clientJson.Length}");
+        
+        // Validate JSON
         try
         {
             var testParse = JsonSerializer.Deserialize<JsonElement>(clientJson);
@@ -47,23 +68,8 @@ class Program
         catch (JsonException ex)
         {
             Console.WriteLine($"❌ JSON parsing error: {ex.Message}");
-            Console.WriteLine($"Attempting to fix JSON...");
-            
-            // Try to fix common issues
-            clientJson = clientJson.Replace("'", "\"");
-            
-            // Try parsing again
-            try
-            {
-                var testParse = JsonSerializer.Deserialize<JsonElement>(clientJson);
-                Console.WriteLine("✓ Fixed JSON is valid");
-            }
-            catch (JsonException ex2)
-            {
-                Console.WriteLine($"❌ Still invalid after fixing: {ex2.Message}");
-                Console.WriteLine("Please check your JSON format");
-                Environment.Exit(1);
-            }
+            Console.WriteLine($"First 200 chars: {clientJson.Substring(0, Math.Min(200, clientJson.Length))}");
+            Environment.Exit(1);
         }
 
         var tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? throw new Exception("MIJNDIAD_TENANT not set");
@@ -208,7 +214,7 @@ class Program
             // 7️⃣ Parse client JSON and convert to form data
             Console.WriteLine("\n[7/8] Preparing form data...");
             
-            // Create a simpler, more robust form data builder
+            // Create form data from JSON
             var formData = BuildFormDataFromJson(clientJson);
             Console.WriteLine($"  Form data fields prepared: {formData.Count()}");
 
@@ -217,7 +223,7 @@ class Program
             
             // Build cookie header
             string cookieHeader = cookieContainer.GetCookieHeader(new Uri(baseUrl));
-            Console.WriteLine($"  Cookie header: {cookieHeader.Length} chars");
+            Console.WriteLine($"  Cookie header length: {cookieHeader.Length} chars");
 
             var createClientRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients")
             {
@@ -284,10 +290,9 @@ class Program
             var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
             
             // Helper to add form field
-            void AddField(string name, object value)
+            void AddField(string name, string value)
             {
-                string stringValue = value?.ToString() ?? "";
-                formData.Add(new StringContent(stringValue), name);
+                formData.Add(new StringContent(value ?? ""), name);
             }
 
             // Add simple fields
@@ -300,7 +305,7 @@ class Program
 
             foreach (var field in simpleFields)
             {
-                if (data.TryGetValue(field, out object value))
+                if (data != null && data.TryGetValue(field, out object? value))
                 {
                     if (value is JsonElement element)
                     {
@@ -308,46 +313,52 @@ class Program
                     }
                     else
                     {
-                        AddField(field, value);
+                        AddField(field, value?.ToString() ?? "");
                     }
                 }
             }
 
             // Handle nested address object
-            if (data.TryGetValue("address", out object addrObj) && addrObj is JsonElement addrElement)
+            if (data != null && data.TryGetValue("address", out object? addrObj) && addrObj is JsonElement addrElement)
             {
                 if (addrElement.ValueKind == JsonValueKind.Object)
                 {
                     var addrDict = JsonSerializer.Deserialize<Dictionary<string, object>>(addrElement.GetRawText());
-                    foreach (var kvp in addrDict)
+                    if (addrDict != null)
                     {
-                        if (kvp.Value is JsonElement element)
+                        foreach (var kvp in addrDict)
                         {
-                            AddField($"address[{kvp.Key}]", GetStringFromElement(element));
-                        }
-                        else
-                        {
-                            AddField($"address[{kvp.Key}]", kvp.Value);
+                            if (kvp.Value is JsonElement element)
+                            {
+                                AddField($"address[{kvp.Key}]", GetStringFromElement(element));
+                            }
+                            else
+                            {
+                                AddField($"address[{kvp.Key}]", kvp.Value?.ToString() ?? "");
+                            }
                         }
                     }
                 }
             }
 
             // Handle invoice_address
-            if (data.TryGetValue("invoice_address", out object invAddrObj) && invAddrObj is JsonElement invAddrElement)
+            if (data != null && data.TryGetValue("invoice_address", out object? invAddrObj) && invAddrObj is JsonElement invAddrElement)
             {
                 if (invAddrElement.ValueKind == JsonValueKind.Object)
                 {
                     var invAddrDict = JsonSerializer.Deserialize<Dictionary<string, object>>(invAddrElement.GetRawText());
-                    foreach (var kvp in invAddrDict)
+                    if (invAddrDict != null)
                     {
-                        if (kvp.Value is JsonElement element)
+                        foreach (var kvp in invAddrDict)
                         {
-                            AddField($"invoice_address[{kvp.Key}]", GetStringFromElement(element));
-                        }
-                        else
-                        {
-                            AddField($"invoice_address[{kvp.Key}]", kvp.Value);
+                            if (kvp.Value is JsonElement element)
+                            {
+                                AddField($"invoice_address[{kvp.Key}]", GetStringFromElement(element));
+                            }
+                            else
+                            {
+                                AddField($"invoice_address[{kvp.Key}]", kvp.Value?.ToString() ?? "");
+                            }
                         }
                     }
                 }
@@ -364,6 +375,7 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"Error building form data: {ex.Message}");
+            Console.WriteLine($"JSON being processed: {json}");
             throw;
         }
     }
