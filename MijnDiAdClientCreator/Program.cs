@@ -16,13 +16,6 @@ class Program
     {
         string clientJson;
         
-        // Debug: Show what args we received
-        Console.WriteLine($"Received {args.Length} arguments:");
-        for (int i = 0; i < args.Length; i++)
-        {
-            Console.WriteLine($"  args[{i}] = '{args[i]}'");
-        }
-
         // Handle different input methods
         if (args.Length >= 2 && args[0] == "--json")
         {
@@ -57,8 +50,6 @@ class Program
             return;
         }
 
-        Console.WriteLine($"\nJSON length: {clientJson.Length}");
-        
         // Validate JSON
         try
         {
@@ -68,7 +59,6 @@ class Program
         catch (JsonException ex)
         {
             Console.WriteLine($"❌ JSON parsing error: {ex.Message}");
-            Console.WriteLine($"First 200 chars: {clientJson.Substring(0, Math.Min(200, clientJson.Length))}");
             Environment.Exit(1);
         }
 
@@ -110,18 +100,18 @@ class Program
             var loginPageHtml = await loginPageResponse.Content.ReadAsStringAsync();
             Console.WriteLine($"  Status: {loginPageResponse.StatusCode}");
 
-            // 2️⃣ Extract CSRF token
-            Console.WriteLine("\n[2/8] Extracting CSRF token...");
+            // 2️⃣ Extract CSRF token from HTML meta tag (THIS IS THE IMPORTANT ONE)
+            Console.WriteLine("\n[2/8] Extracting CSRF token from HTML...");
             var csrfMatch = Regex.Match(loginPageHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
             if (!csrfMatch.Success)
             {
-                Console.WriteLine("❌ CSRF token not found");
+                Console.WriteLine("❌ CSRF token not found in HTML");
                 Environment.Exit(1);
             }
-            var csrfToken = csrfMatch.Groups[1].Value;
-            Console.WriteLine($"  ✓ CSRF token extracted");
+            var htmlCsrfToken = csrfMatch.Groups[1].Value;
+            Console.WriteLine($"  ✓ HTML CSRF token: {htmlCsrfToken.Substring(0, Math.Min(30, htmlCsrfToken.Length))}...");
 
-            // 3️⃣ Login
+            // 3️⃣ Login with HTML CSRF token
             Console.WriteLine("\n[3/8] Logging in...");
             Console.WriteLine($"  Generated TOTP: {totp}");
 
@@ -139,7 +129,7 @@ class Program
                 Content = loginContent
             };
             
-            loginRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            loginRequest.Headers.Add("X-CSRF-TOKEN", htmlCsrfToken); // Use HTML token for login
             loginRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
             loginRequest.Headers.Add("Origin", baseUrl);
             loginRequest.Headers.Add("Referer", $"{baseUrl}/login");
@@ -172,28 +162,29 @@ class Program
             // 6️⃣ Verify session with API user endpoint
             Console.WriteLine("\n[6/8] Verifying authenticated session...");
             
-            // Get plain XSRF token from cookies (not URL-decoded)
-            string plainXsrfToken = "";
+            // Get XSRF token from cookies - this is the one we need for API requests
+            string cookieXsrfToken = "";
             var cookies = cookieContainer.GetCookies(new Uri(baseUrl));
+            Console.WriteLine("  Cookies found:");
             foreach (Cookie c in cookies)
             {
+                Console.WriteLine($"    {c.Name} = {c.Value.Length} chars");
                 if (c.Name == "XSRF-TOKEN")
                 {
-                    plainXsrfToken = c.Value;
-                    break;
+                    cookieXsrfToken = c.Value;
                 }
             }
 
-            if (string.IsNullOrEmpty(plainXsrfToken))
+            if (string.IsNullOrEmpty(cookieXsrfToken))
             {
                 Console.WriteLine("❌ XSRF-TOKEN cookie not found");
                 Environment.Exit(1);
             }
 
-            Console.WriteLine($"  Plain XSRF token: {plainXsrfToken.Substring(0, Math.Min(20, plainXsrfToken.Length))}...");
+            Console.WriteLine($"  ✓ Cookie XSRF token length: {cookieXsrfToken.Length}");
 
             var userRequest = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/api/user");
-            userRequest.Headers.Add("X-CSRF-Token", plainXsrfToken);
+            userRequest.Headers.Add("X-CSRF-Token", cookieXsrfToken); // Use cookie token for API
             userRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
             userRequest.Headers.Add("Referer", $"{baseUrl}/");
             
@@ -223,24 +214,26 @@ class Program
             
             // Build cookie header
             string cookieHeader = cookieContainer.GetCookieHeader(new Uri(baseUrl));
-            Console.WriteLine($"  Cookie header length: {cookieHeader.Length} chars");
+            Console.WriteLine($"  Cookie header: {cookieHeader.Length} chars");
 
             var createClientRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients")
             {
                 Content = formData
             };
 
-            // Headers matching browser request
-            createClientRequest.Headers.Add("X-CSRF-Token", plainXsrfToken);
+            // CRITICAL: Try BOTH tokens to see which one works
+            Console.WriteLine("\n  === Trying different token approaches ===");
+            
+            // Try with the HTML token first (from meta tag)
+            Console.WriteLine($"  Trying with HTML CSRF token (length: {htmlCsrfToken.Length})...");
+            createClientRequest.Headers.Clear();
+            createClientRequest.Headers.Add("X-CSRF-Token", htmlCsrfToken);
             createClientRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
             createClientRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
             createClientRequest.Headers.Add("Origin", baseUrl);
             createClientRequest.Headers.Add("Cookie", cookieHeader);
             createClientRequest.Headers.Add("Accept", "application/json, text/plain, */*");
             createClientRequest.Headers.Add("Accept-Language", "nl");
-
-            Console.WriteLine($"  Sending POST to {baseUrl}/api/clients");
-            Console.WriteLine($"  Content-Type: {formData.Headers.ContentType}");
 
             var clientResponse = await client.SendAsync(createClientRequest);
             var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
@@ -262,6 +255,38 @@ class Program
                 }
             }
 
+            // If failed with HTML token, try with cookie token
+            if (!clientResponse.IsSuccessStatusCode && clientResponse.StatusCode == HttpStatusCode.UnprocessableEntity)
+            {
+                Console.WriteLine("\n  === Retrying with cookie XSRF token ===");
+                
+                // Create new request
+                var retryRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients")
+                {
+                    Content = formData
+                };
+                
+                retryRequest.Headers.Add("X-CSRF-Token", cookieXsrfToken);
+                retryRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+                retryRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
+                retryRequest.Headers.Add("Origin", baseUrl);
+                retryRequest.Headers.Add("Cookie", cookieHeader);
+                retryRequest.Headers.Add("Accept", "application/json, text/plain, */*");
+                retryRequest.Headers.Add("Accept-Language", "nl");
+                
+                var retryResponse = await client.SendAsync(retryRequest);
+                var retryBody = await retryResponse.Content.ReadAsStringAsync();
+                
+                Console.WriteLine($"Retry Status: {(int)retryResponse.StatusCode} ({retryResponse.StatusCode})");
+                Console.WriteLine($"Retry Response: {retryBody}");
+                
+                if (retryResponse.IsSuccessStatusCode)
+                {
+                    Console.WriteLine("\n✅✅✅ SUCCESS! Client created in MijnDiAd EPD ✅✅✅");
+                    return;
+                }
+            }
+
             if (clientResponse.IsSuccessStatusCode)
             {
                 Console.WriteLine("\n✅✅✅ SUCCESS! Client created in MijnDiAd EPD ✅✅✅");
@@ -269,6 +294,11 @@ class Program
             else
             {
                 Console.WriteLine("\n❌ Client creation failed");
+                Console.WriteLine("\n=== TROUBLESHOOTING ===");
+                Console.WriteLine("1. The CSRF token might be wrong");
+                Console.WriteLine("2. Check if the session cookies are correct");
+                Console.WriteLine("3. Verify the user has permission to create clients");
+                Console.WriteLine("4. Try accessing the form manually in browser to get new tokens");
                 Environment.Exit(1);
             }
         }
@@ -357,7 +387,7 @@ class Program
                             }
                             else
                             {
-                                AddField($"invoice_address[{kvp.Key}]", kvp.Value?.ToString() ?? "");
+                                AddField($"invoice_address[{kp.Key}]", kvp.Value?.ToString() ?? "");
                             }
                         }
                     }
@@ -375,7 +405,6 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"Error building form data: {ex.Message}");
-            Console.WriteLine($"JSON being processed: {json}");
             throw;
         }
     }
