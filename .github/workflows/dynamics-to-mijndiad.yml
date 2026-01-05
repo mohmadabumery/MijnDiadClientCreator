@@ -17,16 +17,20 @@ jobs:
 
       - name: Verify .NET Installation
         run: dotnet --version
+        shell: cmd
 
       - name: Restore dependencies
         run: dotnet restore MijnDiAdClientCreator/MijnDiAdClientCreator.csproj
+        shell: cmd
 
       - name: Build project
         run: dotnet build MijnDiAdClientCreator/MijnDiAdClientCreator.csproj --configuration Release
+        shell: cmd
 
       - name: Run client creation
+        shell: cmd
         run: |
-          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json '${{ github.event.inputs.client_json }}'
+          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json "${{ github.event.inputs.client_json }}"
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
@@ -35,9 +39,10 @@ jobs:
 
       - name: Workflow Summary
         if: always()
+        shell: cmd
         run: |
-          if [ $? -eq 0 ]; then
-            echo "✅ Client successfully created in MijnDiAd EPD"
-          else
-            echo "❌ Failed to create client - check logs above"
-          fi
+          if %ERRORLEVEL%==0 (
+            echo ✅ Client successfully created in MijnDiAd EPD
+          ) else (
+            echo ❌ Failed to create client - check logs above
+          )
