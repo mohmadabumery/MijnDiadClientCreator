@@ -10,7 +10,7 @@ on:
 
 jobs:
   create-client:
-    runs-on: [self-hosted, windows, MOHMAD]  # explicitly use your runner
+    runs-on:self-hosted
 
     env:
       MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
