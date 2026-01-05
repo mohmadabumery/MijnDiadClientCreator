@@ -10,9 +10,16 @@ on:
 
 jobs:
   create-client:
-    runs-on: self-hosted
+    runs-on: [self-hosted, windows, MOHMAD]  # explicitly use your runner
+
+    env:
+      MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+      MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
+      MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
+      MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Verify .NET Installation
@@ -30,19 +37,20 @@ jobs:
       - name: Run client creation
         shell: cmd
         run: |
+          echo == Running MijnDiAd Client Creation ==
           dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json "${{ github.event.inputs.client_json }}"
-        env:
-          MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-          MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+          IF %ERRORLEVEL% NEQ 0 (
+            echo ❌ Client creation failed
+            exit /b 1
+          )
+          echo ✅ Client successfully created in MijnDiAd EPD
 
       - name: Workflow Summary
         if: always()
         shell: cmd
         run: |
-          if %ERRORLEVEL%==0 (
-            echo ✅ Client successfully created in MijnDiAd EPD
-          ) else (
-            echo ❌ Failed to create client - check logs above
+          IF %ERRORLEVEL% NEQ 0 (
+            echo ❌ Workflow finished with errors
+          ) ELSE (
+            echo ✅ Workflow finished successfully
           )
