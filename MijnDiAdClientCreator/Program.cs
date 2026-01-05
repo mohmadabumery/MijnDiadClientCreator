@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using OtpNet;
 
 class Program
 {
@@ -39,7 +40,9 @@ class Program
 
         using var client = new HttpClient(handler);
         client.Timeout = TimeSpan.FromSeconds(30);
-        client.DefaultRequestHeaders.Add("User-Agent", "MijnDiAdClientCreator/1.0");
+        client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
+        client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
 
         // 1️⃣ Fetch login page
         Console.WriteLine("[1/6] Fetching login page...");
@@ -70,11 +73,17 @@ class Program
         };
         
         var loginContent = new StringContent(JsonSerializer.Serialize(loginPayload), Encoding.UTF8, "application/json");
-        loginContent.Headers.Clear();
-        loginContent.Headers.Add("Content-Type", "application/json");
-        loginContent.Headers.Add("Accept", "application/json");
-        loginContent.Headers.Add("X-CSRF-TOKEN", csrfToken);
-        loginContent.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        
+        // Clear headers and set new ones for login
+        client.DefaultRequestHeaders.Remove("X-CSRF-TOKEN");
+        client.DefaultRequestHeaders.Remove("X-Requested-With");
+        client.DefaultRequestHeaders.Remove("Origin");
+        client.DefaultRequestHeaders.Remove("Referer");
+        
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", csrfToken);
+        client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+        client.DefaultRequestHeaders.Add("Origin", baseUrl);
+        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/login");
         
         var loginResponse = await client.PostAsync($"{baseUrl}/api/login", loginContent);
         var loginBody = await loginResponse.Content.ReadAsStringAsync();
@@ -87,8 +96,15 @@ class Program
         }
         Console.WriteLine("  ✓ Login successful");
 
-        // 4️⃣ Get Sanctum CSRF cookie (crucial for Laravel Sanctum)
+        // 4️⃣ Get Sanctum CSRF cookie
         Console.WriteLine("[4/6] Getting Sanctum CSRF cookie...");
+        
+        // Clear headers for sanctum request
+        client.DefaultRequestHeaders.Remove("X-CSRF-TOKEN");
+        client.DefaultRequestHeaders.Remove("X-Requested-With");
+        client.DefaultRequestHeaders.Remove("Origin");
+        client.DefaultRequestHeaders.Remove("Referer");
+        
         var sanctumResponse = await client.GetAsync($"{baseUrl}/sanctum/csrf-cookie");
         sanctumResponse.EnsureSuccessStatusCode();
         Console.WriteLine("  ✓ Sanctum CSRF cookie set");
@@ -96,7 +112,8 @@ class Program
         // 5️⃣ Extract cookies
         Console.WriteLine("[5/6] Extracting cookies...");
         var cookies = cookieContainer.GetCookies(new Uri(baseUrl));
-        string xsrfToken = null, sessionCookie = null;
+        string? xsrfToken = null;
+        string? sessionCookie = null;
 
         foreach (Cookie c in cookies)
         {
@@ -117,12 +134,14 @@ class Program
 
         // 6️⃣ Bind session to API by fetching user info
         Console.WriteLine("[6/7] Verifying authenticated session...");
-        client.DefaultRequestHeaders.Clear();
-        client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
-        client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+        
+        // Set headers for API request
+        client.DefaultRequestHeaders.Remove("X-XSRF-TOKEN");
+        client.DefaultRequestHeaders.Remove("Referer");
+        
         client.DefaultRequestHeaders.Add("X-XSRF-TOKEN", xsrfToken);
         client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/");
-
+        
         var userResponse = await client.GetAsync($"{baseUrl}/api/user");
         var userBody = await userResponse.Content.ReadAsStringAsync();
         
@@ -138,11 +157,10 @@ class Program
         Console.WriteLine("[7/7] Creating client...");
         
         var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
-        clientContent.Headers.Clear();
-        clientContent.Headers.Add("Content-Type", "application/json");
-        clientContent.Headers.Add("X-XSRF-TOKEN", xsrfToken);
-        clientContent.Headers.Add("X-Requested-With", "XMLHttpRequest");
-        clientContent.Headers.Add("Referer", $"{baseUrl}/clients/create");
+        
+        // Update headers for client creation
+        client.DefaultRequestHeaders.Remove("Referer");
+        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/clients/create");
         
         var clientResponse = await client.PostAsync($"{baseUrl}/api/clients", clientContent);
         var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
@@ -153,6 +171,25 @@ class Program
         if (!clientResponse.IsSuccessStatusCode)
         {
             Console.WriteLine("\n❌ Client creation failed");
+            
+            // Try to parse error message
+            try
+            {
+                var errorObj = JsonSerializer.Deserialize<JsonElement>(clientResponseBody);
+                if (errorObj.TryGetProperty("messages", out var messages))
+                {
+                    Console.WriteLine("Error messages:");
+                    foreach (var msg in messages.EnumerateArray())
+                    {
+                        Console.WriteLine($"  - {msg}");
+                    }
+                }
+            }
+            catch
+            {
+                // If we can't parse JSON, just show raw response
+            }
+            
             Environment.Exit(1);
         }
 
@@ -162,46 +199,17 @@ class Program
     static string GenerateTotp(string base32Secret)
     {
         if (string.IsNullOrEmpty(base32Secret)) return "000000";
-
-        var key = Base32Decode(base32Secret);
-        var timestep = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30;
-        var data = BitConverter.GetBytes(timestep);
-        if (BitConverter.IsLittleEndian) Array.Reverse(data);
-
-        using var hmac = new System.Security.Cryptography.HMACSHA1(key);
-        var hash = hmac.ComputeHash(data);
-
-        int offset = hash[^1] & 0x0F;
-        int binary = ((hash[offset] & 0x7F) << 24) |
-                     ((hash[offset + 1] & 0xFF) << 16) |
-                     ((hash[offset + 2] & 0xFF) << 8) |
-                     (hash[offset + 3] & 0xFF);
-
-        return (binary % 1_000_000).ToString("D6");
-    }
-
-    static byte[] Base32Decode(string input)
-    {
-        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-        var output = new byte[input.Length * 5 / 8];
-        int bitBuffer = 0, bitCount = 0, index = 0;
-
-        foreach (char c in input.TrimEnd('='))
+        
+        try
         {
-            int charIndex = alphabet.IndexOf(c);
-            if (charIndex < 0) continue;
-
-            bitBuffer = (bitBuffer << 5) | charIndex;
-            bitCount += 5;
-
-            if (bitCount >= 8)
-            {
-                output[index++] = (byte)(bitBuffer >> (bitCount - 8));
-                bitCount -= 8;
-            }
+            var secretKey = Base32Encoding.ToBytes(base32Secret);
+            var totp = new Totp(secretKey);
+            return totp.ComputeTotp();
         }
-
-        Array.Resize(ref output, index);
-        return output;
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️  TOTP generation error: {ex.Message}");
+            return "123456"; // Fallback for testing
+        }
     }
 }
