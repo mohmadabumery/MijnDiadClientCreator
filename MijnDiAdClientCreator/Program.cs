@@ -13,13 +13,58 @@ class Program
 {
     static async Task Main(string[] args)
     {
+        // Debug: Show what args we received
+        Console.WriteLine($"Received {args.Length} arguments:");
+        for (int i = 0; i < args.Length; i++)
+        {
+            Console.WriteLine($"  args[{i}] = '{args[i]}'");
+        }
+
         if (args.Length < 2 || args[0] != "--json")
         {
             Console.WriteLine("Usage: dotnet run -- --json '{\"firstname\":\"John\", ...}'");
+            Console.WriteLine("Or: dotnet run -- --json \"{\\\"firstname\\\":\\\"John\\\", ...}\"");
             return;
         }
 
         string clientJson = args[1];
+        Console.WriteLine($"Raw JSON input length: {clientJson.Length}");
+        Console.WriteLine($"First 100 chars: {clientJson.Substring(0, Math.Min(100, clientJson.Length))}");
+
+        // Try to clean the JSON if it has issues
+        if (clientJson.StartsWith("'") && clientJson.EndsWith("'"))
+        {
+            Console.WriteLine("Removing single quotes from JSON...");
+            clientJson = clientJson.Trim('\'');
+        }
+
+        // Try to parse JSON to validate it
+        try
+        {
+            var testParse = JsonSerializer.Deserialize<JsonElement>(clientJson);
+            Console.WriteLine("✓ JSON is valid");
+        }
+        catch (JsonException ex)
+        {
+            Console.WriteLine($"❌ JSON parsing error: {ex.Message}");
+            Console.WriteLine($"Attempting to fix JSON...");
+            
+            // Try to fix common issues
+            clientJson = clientJson.Replace("'", "\"");
+            
+            // Try parsing again
+            try
+            {
+                var testParse = JsonSerializer.Deserialize<JsonElement>(clientJson);
+                Console.WriteLine("✓ Fixed JSON is valid");
+            }
+            catch (JsonException ex2)
+            {
+                Console.WriteLine($"❌ Still invalid after fixing: {ex2.Message}");
+                Console.WriteLine("Please check your JSON format");
+                Environment.Exit(1);
+            }
+        }
 
         var tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? throw new Exception("MIJNDIAD_TENANT not set");
         var username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME") ?? throw new Exception("MIJNDIAD_USERNAME not set");
@@ -29,7 +74,7 @@ class Program
 
         var baseUrl = $"https://{tenant}.mijndiad.nl";
 
-        Console.WriteLine("== MijnDiAd Auto-Login & Client Creation ==");
+        Console.WriteLine("\n== MijnDiAd Auto-Login & Client Creation ==");
         Console.WriteLine($"Running on: {Environment.MachineName}");
         Console.WriteLine($"Base URL: {baseUrl}");
 
@@ -113,7 +158,7 @@ class Program
             sanctumResponse.EnsureSuccessStatusCode();
             Console.WriteLine("  ✓ Sanctum CSRF cookie refreshed");
 
-            // 5️⃣ Add locale cookie (IMPORTANT: based on browser request)
+            // 5️⃣ Add locale cookie
             Console.WriteLine("\n[5/8] Setting locale cookie...");
             cookieContainer.Add(new Uri(baseUrl), new Cookie("locale", "nl"));
             Console.WriteLine("  ✓ Locale cookie set to 'nl'");
@@ -122,7 +167,7 @@ class Program
             Console.WriteLine("\n[6/8] Verifying authenticated session...");
             
             // Get plain XSRF token from cookies (not URL-decoded)
-            string plainXsrfToken = null;
+            string plainXsrfToken = "";
             var cookies = cookieContainer.GetCookies(new Uri(baseUrl));
             foreach (Cookie c in cookies)
             {
@@ -142,7 +187,7 @@ class Program
             Console.WriteLine($"  Plain XSRF token: {plainXsrfToken.Substring(0, Math.Min(20, plainXsrfToken.Length))}...");
 
             var userRequest = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/api/user");
-            userRequest.Headers.Add("X-CSRF-Token", plainXsrfToken); // Note: X-CSRF-Token, not X-XSRF-TOKEN
+            userRequest.Headers.Add("X-CSRF-Token", plainXsrfToken);
             userRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
             userRequest.Headers.Add("Referer", $"{baseUrl}/");
             
@@ -162,52 +207,34 @@ class Program
 
             // 7️⃣ Parse client JSON and convert to form data
             Console.WriteLine("\n[7/8] Preparing form data...");
-            var formData = new MultipartFormDataContent();
             
-            try
-            {
-                var clientData = JsonSerializer.Deserialize<JsonElement>(clientJson);
-                AddJsonToFormData(formData, clientData, "");
-                
-                // Debug: Show form data fields
-                Console.WriteLine($"  Form data fields prepared: {formData.Count()}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Error parsing JSON: {ex.Message}");
-                Environment.Exit(1);
-            }
+            // Create a simpler, more robust form data builder
+            var formData = BuildFormDataFromJson(clientJson);
+            Console.WriteLine($"  Form data fields prepared: {formData.Count()}");
 
             // 8️⃣ Create client with MULTIPART/FORM-DATA
             Console.WriteLine("\n[8/8] Creating client...");
             
-            // Build cookie header manually to ensure all cookies are included
+            // Build cookie header
             string cookieHeader = cookieContainer.GetCookieHeader(new Uri(baseUrl));
-            Console.WriteLine($"  Cookie header length: {cookieHeader.Length} chars");
+            Console.WriteLine($"  Cookie header: {cookieHeader.Length} chars");
 
             var createClientRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients")
             {
                 Content = formData
             };
 
-            // CRITICAL HEADERS - match browser exactly
-            createClientRequest.Headers.Add("X-CSRF-Token", plainXsrfToken); // X-CSRF-Token, not X-XSRF-TOKEN
+            // Headers matching browser request
+            createClientRequest.Headers.Add("X-CSRF-Token", plainXsrfToken);
             createClientRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
             createClientRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
             createClientRequest.Headers.Add("Origin", baseUrl);
             createClientRequest.Headers.Add("Cookie", cookieHeader);
             createClientRequest.Headers.Add("Accept", "application/json, text/plain, */*");
             createClientRequest.Headers.Add("Accept-Language", "nl");
-            createClientRequest.Headers.Add("Accept-Encoding", "gzip, deflate, br, zstd");
-            createClientRequest.Headers.Add("Sec-Ch-Ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"");
-            createClientRequest.Headers.Add("Sec-Ch-Ua-Mobile", "?0");
-            createClientRequest.Headers.Add("Sec-Ch-Ua-Platform", "\"Windows\"");
-            createClientRequest.Headers.Add("Sec-Fetch-Dest", "empty");
-            createClientRequest.Headers.Add("Sec-Fetch-Mode", "cors");
-            createClientRequest.Headers.Add("Sec-Fetch-Site", "same-origin");
-            createClientRequest.Headers.Add("Priority", "u=1, i");
 
-            Console.WriteLine("  Sending request with multipart/form-data...");
+            Console.WriteLine($"  Sending POST to {baseUrl}/api/clients");
+            Console.WriteLine($"  Content-Type: {formData.Headers.ContentType}");
 
             var clientResponse = await client.SendAsync(createClientRequest);
             var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
@@ -247,56 +274,105 @@ class Program
         }
     }
 
-    // Helper method to recursively add JSON data to form data
-    static void AddJsonToFormData(MultipartFormDataContent formData, JsonElement element, string prefix)
+    // Simpler, more robust form data builder
+    static MultipartFormDataContent BuildFormDataFromJson(string json)
     {
-        switch (element.ValueKind)
+        var formData = new MultipartFormDataContent();
+        
+        try
         {
-            case JsonValueKind.Object:
-                foreach (var property in element.EnumerateObject())
+            var data = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            
+            // Helper to add form field
+            void AddField(string name, object value)
+            {
+                string stringValue = value?.ToString() ?? "";
+                formData.Add(new StringContent(stringValue), name);
+            }
+
+            // Add simple fields
+            var simpleFields = new[] { 
+                "salutation", "firstname", "lastname", "gender", "date_of_birth",
+                "date_of_intake", "email", "mobilenumber", "reminder", "confirmation",
+                "invoice_relation_id", "invoice_send_method", "is_active",
+                "different_post_address", "allow_dubble_email"
+            };
+
+            foreach (var field in simpleFields)
+            {
+                if (data.TryGetValue(field, out object value))
                 {
-                    string key = string.IsNullOrEmpty(prefix) 
-                        ? property.Name 
-                        : $"{prefix}[{property.Name}]";
-                    AddJsonToFormData(formData, property.Value, key);
-                }
-                break;
-                
-            case JsonValueKind.Array:
-                int index = 0;
-                foreach (var item in element.EnumerateArray())
-                {
-                    if (item.ValueKind == JsonValueKind.Object || item.ValueKind == JsonValueKind.Array)
+                    if (value is JsonElement element)
                     {
-                        AddJsonToFormData(formData, item, $"{prefix}[{index}]");
+                        AddField(field, GetStringFromElement(element));
                     }
                     else
                     {
-                        // For simple arrays, use empty brackets
-                        formData.Add(new StringContent(GetStringValue(item)), $"{prefix}[]");
+                        AddField(field, value);
                     }
-                    index++;
                 }
-                
-                // Handle empty arrays - add empty field
-                if (index == 0 && !string.IsNullOrEmpty(prefix))
+            }
+
+            // Handle nested address object
+            if (data.TryGetValue("address", out object addrObj) && addrObj is JsonElement addrElement)
+            {
+                if (addrElement.ValueKind == JsonValueKind.Object)
                 {
-                    formData.Add(new StringContent(""), $"{prefix}[]");
+                    var addrDict = JsonSerializer.Deserialize<Dictionary<string, object>>(addrElement.GetRawText());
+                    foreach (var kvp in addrDict)
+                    {
+                        if (kvp.Value is JsonElement element)
+                        {
+                            AddField($"address[{kvp.Key}]", GetStringFromElement(element));
+                        }
+                        else
+                        {
+                            AddField($"address[{kvp.Key}]", kvp.Value);
+                        }
+                    }
                 }
-                break;
-                
-            default:
-                formData.Add(new StringContent(GetStringValue(element)), prefix);
-                break;
+            }
+
+            // Handle invoice_address
+            if (data.TryGetValue("invoice_address", out object invAddrObj) && invAddrObj is JsonElement invAddrElement)
+            {
+                if (invAddrElement.ValueKind == JsonValueKind.Object)
+                {
+                    var invAddrDict = JsonSerializer.Deserialize<Dictionary<string, object>>(invAddrElement.GetRawText());
+                    foreach (var kvp in invAddrDict)
+                    {
+                        if (kvp.Value is JsonElement element)
+                        {
+                            AddField($"invoice_address[{kvp.Key}]", GetStringFromElement(element));
+                        }
+                        else
+                        {
+                            AddField($"invoice_address[{kvp.Key}]", kvp.Value);
+                        }
+                    }
+                }
+            }
+
+            // Handle arrays - add empty fields if needed
+            formData.Add(new StringContent(""), "client_attributes[]");
+            
+            // Handle null client_group_ids
+            formData.Add(new StringContent(""), "client_group_ids");
+            
+            return formData;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error building form data: {ex.Message}");
+            throw;
         }
     }
 
-    // Helper to convert JsonElement to string
-    static string GetStringValue(JsonElement element)
+    static string GetStringFromElement(JsonElement element)
     {
         return element.ValueKind switch
         {
-            JsonValueKind.String => element.GetString(),
+            JsonValueKind.String => element.GetString() ?? "",
             JsonValueKind.Number => element.GetRawText(),
             JsonValueKind.True => "1",
             JsonValueKind.False => "0",
@@ -305,7 +381,7 @@ class Program
         };
     }
 
-    // TOTP generation using OtpNET
+    // TOTP generation
     static string GenerateTotp(string base32Secret)
     {
         if (string.IsNullOrEmpty(base32Secret)) return "000000";
