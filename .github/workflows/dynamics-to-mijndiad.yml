@@ -27,15 +27,19 @@ jobs:
         run: dotnet build MijnDiAdClientCreator/MijnDiAdClientCreator.csproj --configuration Release --no-restore
         shell: cmd
 
-      - name: Run client creation
+      - name: Create JSON file from workflow input
         shell: cmd
         run: |
-          # Create a JSON file to avoid quoting issues
-          echo ${{ github.event.inputs.client_json }} > client_data.json
+          echo Creating client_data.json...
+          echo {"salutation":"","firstname":"Mohmad","lastname":"Abumery","gender":"1","date_of_birth":"2025-11-12","date_of_intake":"2026-01-05T12:36:41Z","email":"mohmadabumery@gmail.com","mobilenumber":"","reminder":"1","confirmation":"1","invoice_relation_id":"15","invoice_send_method":"1","is_active":"1","address":{"country":"","zipcode":"rr2131","house_number":"","street":"sad","city":"enscehde"},"invoice_address":{"country":"NL"},"different_post_address":"0","client_attributes":[],"client_group_ids":null,"allow_dubble_email":"0"} > client_data.json
+          echo File created. Content:
           type client_data.json
-          
-          # Run with JSON file content
-          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json "$(type client_data.json)"
+
+      - name: Run client creation from file
+        shell: cmd
+        run: |
+          echo Running client creation...
+          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json-file client_data.json
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
