@@ -1,168 +1,195 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Collections.Generic;
-using System.IO;
-using OtpNet;
 
 class Program
 {
-    static async Task Main(string[] args)
+    static async Task<int> Main(string[] args)
     {
         Console.WriteLine("=== MijnDiAd Client Creator ===");
 
-        string jsonFilePath = "client_data.json";
-        if (!File.Exists(jsonFilePath))
+        string jsonPath = GetArg(args, "--json-file");
+        if (string.IsNullOrEmpty(jsonPath) || !File.Exists(jsonPath))
         {
-            Console.WriteLine("❌ client_data.json not found");
-            Environment.Exit(1);
+            Console.WriteLine("❌ Missing or invalid --json-file");
+            return 1;
         }
 
-        string clientJson = await File.ReadAllTextAsync(jsonFilePath);
-        JsonSerializer.Deserialize<JsonElement>(clientJson);
+        string clientJson = File.ReadAllText(jsonPath);
+        Console.WriteLine($"Read JSON from {jsonPath} ({clientJson.Length} chars)");
 
-        bool success = await CreateClient(clientJson);
-        Environment.Exit(success ? 0 : 1);
-    }
+        using var doc = JsonDocument.Parse(clientJson);
+        Console.WriteLine("✓ JSON is valid");
 
-    static async Task<bool> CreateClient(string clientJson)
-    {
-        string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT");
-        string username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
-        string password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
-        string totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
+        string tenant = Env("MIJNDIAD_TENANT");
+        string username = Env("MIJNDIAD_USERNAME");
+        string password = Env("MIJNDIAD_PASSWORD");
+        string totpSecret = Env("MIJNDIAD_TOTP_SECRET");
 
         string baseUrl = $"https://{tenant}.mijndiad.nl";
+        Console.WriteLine($"Target: {baseUrl}");
 
         var cookies = new CookieContainer();
         var handler = new HttpClientHandler
         {
             CookieContainer = cookies,
-            UseCookies = true,
-            AllowAutoRedirect = false
+            AllowAutoRedirect = true,
+            AutomaticDecompression = DecompressionMethods.All
         };
 
         using var client = new HttpClient(handler);
         client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
 
-        Console.WriteLine("Target: " + baseUrl);
-
-        // -------------------------------------------------
-        // LOGIN
-        // -------------------------------------------------
+        /* ---------------------------------------------------------
+         * 1. LOGIN
+         * ---------------------------------------------------------*/
         Console.WriteLine("[1/6] Logging in...");
-        string loginCsrf = await GetCsrf(client, $"{baseUrl}/login");
-
-        var loginPayload = new
-        {
-            email = username,
-            password = password,
-            totp_code = GenerateTotp(totpSecret)
-        };
-
-        var loginReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/login");
-        loginReq.Headers.Add("X-CSRF-TOKEN", loginCsrf);
-        loginReq.Headers.Add("X-Requested-With", "XMLHttpRequest");
-        loginReq.Content = new StringContent(JsonSerializer.Serialize(loginPayload), Encoding.UTF8, "application/json");
-
-        var loginResp = await client.SendAsync(loginReq);
-        if (!loginResp.IsSuccessStatusCode) return false;
-
+        await Login(client, baseUrl, username, password, totpSecret);
         Console.WriteLine("✓ Login successful");
 
-        // -------------------------------------------------
-        // SANCTUM
-        // -------------------------------------------------
+        /* ---------------------------------------------------------
+         * 2. SANCTUM INIT
+         * ---------------------------------------------------------*/
         Console.WriteLine("[2/6] Initializing Sanctum...");
         await client.GetAsync($"{baseUrl}/sanctum/csrf-cookie");
 
-        // -------------------------------------------------
-        // FORM PAGE
-        // -------------------------------------------------
+        /* ---------------------------------------------------------
+         * 3. LOAD CREATE FORM (GET REAL CSRF)
+         * ---------------------------------------------------------*/
         Console.WriteLine("[3/6] Loading create form...");
-        await client.GetAsync($"{baseUrl}/clients/create");
+        var createPage = await client.GetStringAsync($"{baseUrl}/clients/create");
+        string csrfToken = ExtractCsrf(createPage);
+        if (string.IsNullOrEmpty(csrfToken))
+            throw new Exception("Failed to extract CSRF token");
 
-        // -------------------------------------------------
-        // API BIND
-        // -------------------------------------------------
+        Console.WriteLine($"✓ Fresh CSRF token ({csrfToken.Length} chars)");
+
+        /* ---------------------------------------------------------
+         * 4. BIND API SESSION
+         * ---------------------------------------------------------*/
         Console.WriteLine("[4/6] Binding API session...");
-        var xsrfCookie = cookies.GetCookies(new Uri(baseUrl))["XSRF-TOKEN"]?.Value;
-        string decodedXsrf = WebUtility.UrlDecode(xsrfCookie);
-
-        var apiBind = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/api/user");
-        apiBind.Headers.Add("X-XSRF-TOKEN", decodedXsrf);
-        apiBind.Headers.Add("X-Requested-With", "XMLHttpRequest");
-
-        var apiResp = await client.SendAsync(apiBind);
-        if (!apiResp.IsSuccessStatusCode) return false;
+        var userResp = await client.GetAsync($"{baseUrl}/api/user");
+        if (!userResp.IsSuccessStatusCode)
+            throw new Exception("API session binding failed");
 
         Console.WriteLine("✓ API session bound");
 
-        // -------------------------------------------------
-        // FORM DATA (URL ENCODED)
-        // -------------------------------------------------
+        /* ---------------------------------------------------------
+         * 5. BUILD PAYLOAD (IMPORTANT FIX)
+         * ---------------------------------------------------------*/
         Console.WriteLine("[5/6] Preparing payload...");
-        var formFields = BuildUrlEncodedForm(clientJson);
+        var formFields = BuildForm(clientJson, csrfToken);
 
-        // -------------------------------------------------
-        // CREATE CLIENT
-        // -------------------------------------------------
+        var content = new FormUrlEncodedContent(formFields);
+
+        /* ---------------------------------------------------------
+         * 6. CREATE CLIENT
+         * ---------------------------------------------------------*/
         Console.WriteLine("[6/6] Creating client...");
+        var resp = await client.PostAsync($"{baseUrl}/api/clients", content);
 
-        var createReq = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients");
-        createReq.Headers.Add("X-XSRF-TOKEN", decodedXsrf);
-        createReq.Headers.Add("X-Requested-With", "XMLHttpRequest");
-        createReq.Headers.Add("Accept", "application/json");
-        createReq.Content = new FormUrlEncodedContent(formFields);
-
-        var createResp = await client.SendAsync(createReq);
-        string body = await createResp.Content.ReadAsStringAsync();
-
-        Console.WriteLine($"Status: {createResp.StatusCode}");
+        Console.WriteLine($"Status: {resp.StatusCode}");
+        string body = await resp.Content.ReadAsStringAsync();
         Console.WriteLine(body);
 
-        return createResp.IsSuccessStatusCode;
-    }
-
-    static async Task<string> GetCsrf(HttpClient client, string url)
-    {
-        var html = await client.GetStringAsync(url);
-        var m = Regex.Match(html, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
-        return m.Groups[1].Value;
-    }
-
-    static Dictionary<string, string> BuildUrlEncodedForm(string json)
-    {
-        var data = JsonSerializer.Deserialize<JsonElement>(json);
-        var dict = new Dictionary<string, string>();
-
-        void Add(string k, string v) => dict[k] = v ?? "";
-
-        Add("firstname", data.GetProperty("firstname").GetString());
-        Add("lastname", data.GetProperty("lastname").GetString());
-        Add("email", data.GetProperty("email").GetString());
-        Add("gender", data.GetProperty("gender").GetString());
-        Add("invoice_relation_id", data.GetProperty("invoice_relation_id").GetString());
-
-        if (data.TryGetProperty("address", out var addr))
+        if (!resp.IsSuccessStatusCode)
         {
-            foreach (var p in addr.EnumerateObject())
-                Add($"address[{p.Name}]", p.Value.GetString());
+            Console.WriteLine("❌ Client creation failed");
+            return 1;
         }
 
-        dict["client_attributes[]"] = "";
-        dict["client_group_ids"] = "";
+        Console.WriteLine("✅ Client successfully created");
+        return 0;
+    }
 
+    /* ============================================================
+     * HELPERS
+     * ============================================================*/
+
+    static async Task Login(HttpClient client, string baseUrl, string user, string pass, string totpSecret)
+    {
+        string loginPage = await client.GetStringAsync($"{baseUrl}/login");
+        string csrf = ExtractCsrf(loginPage);
+
+        var data = new Dictionary<string, string>
+        {
+            ["_token"] = csrf,
+            ["email"] = user,
+            ["password"] = pass,
+            ["totp"] = GenerateTotp(totpSecret)
+        };
+
+        var resp = await client.PostAsync($"{baseUrl}/login", new FormUrlEncodedContent(data));
+        if (!resp.IsSuccessStatusCode)
+            throw new Exception("Login failed");
+    }
+
+    static Dictionary<string, string> BuildForm(string json, string csrfToken)
+    {
+        var dict = new Dictionary<string, string>
+        {
+            // 🔑 REQUIRED HIDDEN FIELDS (THE FIX)
+            ["_token"] = csrfToken,
+            ["_method"] = "POST",
+            ["submit_type"] = "save",
+            ["wizard_step"] = "final"
+        };
+
+        using var doc = JsonDocument.Parse(json);
+        FlattenJson("", doc.RootElement, dict);
         return dict;
+    }
+
+    static void FlattenJson(string prefix, JsonElement el, Dictionary<string, string> dict)
+    {
+        if (el.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var p in el.EnumerateObject())
+                FlattenJson($"{prefix}{p.Name}.", p.Value, dict);
+        }
+        else if (el.ValueKind == JsonValueKind.Array)
+        {
+            int i = 0;
+            foreach (var v in el.EnumerateArray())
+                FlattenJson($"{prefix}{i++}.", v, dict);
+        }
+        else
+        {
+            dict[prefix.TrimEnd('.')] = el.ToString();
+        }
+    }
+
+    static string ExtractCsrf(string html)
+    {
+        var m = Regex.Match(html, "name=\"_token\" value=\"([^\"]+)\"");
+        return m.Success ? m.Groups[1].Value : "";
     }
 
     static string GenerateTotp(string secret)
     {
-        var bytes = Base32Encoding.ToBytes(secret);
-        return new Totp(bytes).ComputeTotp();
+        var totp = new OtpNet.Totp(OtpNet.Base32Encoding.ToBytes(secret));
+        return totp.ComputeTotp();
+    }
+
+    static string Env(string name)
+    {
+        var v = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrEmpty(v))
+            throw new Exception($"Missing env var: {name}");
+        return v;
+    }
+
+    static string GetArg(string[] args, string name)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+            if (args[i] == name)
+                return args[i + 1];
+        return null;
     }
 }
