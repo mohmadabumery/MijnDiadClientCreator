@@ -30,12 +30,15 @@ class Program
         Console.WriteLine("== MijnDiAd Auto-Login & Client Creation ==");
         Console.WriteLine($"Running on: {Environment.MachineName}");
 
+        // Configure HttpClient with cookies
         var cookieContainer = new CookieContainer();
         var handler = new HttpClientHandler
         {
             CookieContainer = cookieContainer,
             UseCookies = true,
-            AutomaticDecompression = DecompressionMethods.All
+            UseDefaultCredentials = false,
+            AutomaticDecompression = DecompressionMethods.All,
+            AllowAutoRedirect = false // Important: don't auto-redirect
         };
 
         using var client = new HttpClient(handler);
@@ -45,13 +48,13 @@ class Program
         client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
 
         // 1️⃣ Fetch login page
-        Console.WriteLine("[1/6] Fetching login page...");
+        Console.WriteLine("[1/7] Fetching login page...");
         var loginPageResponse = await client.GetAsync($"{baseUrl}/login");
         loginPageResponse.EnsureSuccessStatusCode();
         var loginPageHtml = await loginPageResponse.Content.ReadAsStringAsync();
 
         // 2️⃣ Extract CSRF token
-        Console.WriteLine("[2/6] Extracting CSRF token...");
+        Console.WriteLine("[2/7] Extracting CSRF token...");
         var csrfMatch = Regex.Match(loginPageHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
         if (!csrfMatch.Success)
         {
@@ -59,10 +62,10 @@ class Program
             Environment.Exit(1);
         }
         var csrfToken = csrfMatch.Groups[1].Value;
-        Console.WriteLine("  ✓ CSRF token extracted");
+        Console.WriteLine($"  ✓ CSRF token extracted: {csrfToken.Substring(0, Math.Min(20, csrfToken.Length))}...");
 
         // 3️⃣ Login
-        Console.WriteLine("[3/6] Logging in...");
+        Console.WriteLine("[3/7] Logging in...");
         Console.WriteLine($"  Generated TOTP: {totp}");
 
         var loginPayload = new
@@ -74,18 +77,15 @@ class Program
         
         var loginContent = new StringContent(JsonSerializer.Serialize(loginPayload), Encoding.UTF8, "application/json");
         
-        // Clear headers and set new ones for login
-        client.DefaultRequestHeaders.Remove("X-CSRF-TOKEN");
-        client.DefaultRequestHeaders.Remove("X-Requested-With");
-        client.DefaultRequestHeaders.Remove("Origin");
-        client.DefaultRequestHeaders.Remove("Referer");
+        // Create a new HttpRequestMessage for login to control headers precisely
+        var loginRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/login");
+        loginRequest.Content = loginContent;
+        loginRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        loginRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        loginRequest.Headers.Add("Origin", baseUrl);
+        loginRequest.Headers.Add("Referer", $"{baseUrl}/login");
         
-        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", csrfToken);
-        client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
-        client.DefaultRequestHeaders.Add("Origin", baseUrl);
-        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/login");
-        
-        var loginResponse = await client.PostAsync($"{baseUrl}/api/login", loginContent);
+        var loginResponse = await client.SendAsync(loginRequest);
         var loginBody = await loginResponse.Content.ReadAsStringAsync();
 
         if (!loginResponse.IsSuccessStatusCode)
@@ -96,53 +96,60 @@ class Program
         }
         Console.WriteLine("  ✓ Login successful");
 
-        // 4️⃣ Get Sanctum CSRF cookie
-        Console.WriteLine("[4/6] Getting Sanctum CSRF cookie...");
+        // 4️⃣ Get Sanctum CSRF cookie (IMPORTANT: must be done after login)
+        Console.WriteLine("[4/7] Getting Sanctum CSRF cookie...");
         
-        // Clear headers for sanctum request
-        client.DefaultRequestHeaders.Remove("X-CSRF-TOKEN");
-        client.DefaultRequestHeaders.Remove("X-Requested-With");
-        client.DefaultRequestHeaders.Remove("Origin");
-        client.DefaultRequestHeaders.Remove("Referer");
+        // Clear default headers and set fresh ones
+        client.DefaultRequestHeaders.Clear();
+        client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
+        client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
         
         var sanctumResponse = await client.GetAsync($"{baseUrl}/sanctum/csrf-cookie");
         sanctumResponse.EnsureSuccessStatusCode();
         Console.WriteLine("  ✓ Sanctum CSRF cookie set");
 
-        // 5️⃣ Extract cookies
-        Console.WriteLine("[5/6] Extracting cookies...");
+        // 5️⃣ Extract and decode cookies
+        Console.WriteLine("[5/7] Extracting cookies...");
         var cookies = cookieContainer.GetCookies(new Uri(baseUrl));
         string? xsrfToken = null;
         string? sessionCookie = null;
 
         foreach (Cookie c in cookies)
         {
-            if (c.Name == "XSRF-TOKEN") xsrfToken = Uri.UnescapeDataString(c.Value);
-            if (c.Name == $"{tenant}_session") sessionCookie = c.Value;
+            Console.WriteLine($"  Cookie: {c.Name} = {c.Value.Length} chars");
+            if (c.Name == "XSRF-TOKEN") 
+            {
+                xsrfToken = Uri.UnescapeDataString(c.Value);
+                Console.WriteLine($"    XSRF decoded length: {xsrfToken.Length}");
+            }
+            if (c.Name == $"{tenant}_session") 
+            {
+                sessionCookie = c.Value;
+            }
         }
 
         if (string.IsNullOrEmpty(xsrfToken) || string.IsNullOrEmpty(sessionCookie))
         {
             Console.WriteLine("❌ Required cookies missing");
-            Console.WriteLine($"XSRF-TOKEN: {xsrfToken?.Length ?? 0} chars");
-            Console.WriteLine($"Session: {sessionCookie?.Length ?? 0} chars");
+            Console.WriteLine($"XSRF-TOKEN present: {!string.IsNullOrEmpty(xsrfToken)}");
+            Console.WriteLine($"Session cookie present: {!string.IsNullOrEmpty(sessionCookie)}");
             Environment.Exit(1);
         }
 
         Console.WriteLine($"  ✓ Session cookie: {sessionCookie.Length} chars");
         Console.WriteLine($"  ✓ XSRF token: {xsrfToken.Length} chars");
 
-        // 6️⃣ Bind session to API by fetching user info
+        // 6️⃣ Verify session with API user endpoint
         Console.WriteLine("[6/7] Verifying authenticated session...");
         
-        // Set headers for API request
-        client.DefaultRequestHeaders.Remove("X-XSRF-TOKEN");
-        client.DefaultRequestHeaders.Remove("Referer");
+        // Create a request with proper headers
+        var userRequest = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/api/user");
+        userRequest.Headers.Add("X-XSRF-TOKEN", xsrfToken);
+        userRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        userRequest.Headers.Add("Referer", $"{baseUrl}/");
         
-        client.DefaultRequestHeaders.Add("X-XSRF-TOKEN", xsrfToken);
-        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/");
-        
-        var userResponse = await client.GetAsync($"{baseUrl}/api/user");
+        var userResponse = await client.SendAsync(userRequest);
         var userBody = await userResponse.Content.ReadAsStringAsync();
         
         if (!userResponse.IsSuccessStatusCode)
@@ -153,41 +160,56 @@ class Program
         }
         Console.WriteLine("  ✓ Session verified and bound");
 
-        // 7️⃣ Create client with proper headers
+        // 7️⃣ Create client
         Console.WriteLine("[7/7] Creating client...");
         
         var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
         
-        // Update headers for client creation
-        client.DefaultRequestHeaders.Remove("Referer");
-        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/clients/create");
+        // Create client creation request
+        var clientRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients");
+        clientRequest.Content = clientContent;
+        clientRequest.Headers.Add("X-XSRF-TOKEN", xsrfToken);
+        clientRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        clientRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
         
-        var clientResponse = await client.PostAsync($"{baseUrl}/api/clients", clientContent);
+        var clientResponse = await client.SendAsync(clientRequest);
         var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
 
         Console.WriteLine($"\n== Response Status: {(int)clientResponse.StatusCode} ==");
-        Console.WriteLine(clientResponseBody);
+        
+        // Try to parse the response
+        try
+        {
+            if (!string.IsNullOrEmpty(clientResponseBody))
+            {
+                var json = JsonSerializer.Deserialize<JsonElement>(clientResponseBody);
+                var formatted = JsonSerializer.Serialize(json, new JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine(formatted);
+            }
+            else
+            {
+                Console.WriteLine(clientResponseBody);
+            }
+        }
+        catch
+        {
+            Console.WriteLine(clientResponseBody);
+        }
 
         if (!clientResponse.IsSuccessStatusCode)
         {
             Console.WriteLine("\n❌ Client creation failed");
             
-            // Try to parse error message
-            try
+            // Additional debugging info
+            Console.WriteLine("\n=== Debug Info ===");
+            Console.WriteLine($"XSRF Token length: {xsrfToken.Length}");
+            Console.WriteLine($"Session cookie length: {sessionCookie.Length}");
+            Console.WriteLine($"Request URL: {baseUrl}/api/clients");
+            
+            // Check if there are validation errors
+            if (clientResponse.StatusCode == System.Net.HttpStatusCode.UnprocessableEntity)
             {
-                var errorObj = JsonSerializer.Deserialize<JsonElement>(clientResponseBody);
-                if (errorObj.TryGetProperty("messages", out var messages))
-                {
-                    Console.WriteLine("Error messages:");
-                    foreach (var msg in messages.EnumerateArray())
-                    {
-                        Console.WriteLine($"  - {msg}");
-                    }
-                }
-            }
-            catch
-            {
-                // If we can't parse JSON, just show raw response
+                Console.WriteLine("Validation errors detected");
             }
             
             Environment.Exit(1);
@@ -209,7 +231,7 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"⚠️  TOTP generation error: {ex.Message}");
-            return "123456"; // Fallback for testing
+            return "123456";
         }
     }
 }
