@@ -17,15 +17,12 @@ class Program
         
         string jsonFilePath = "client_data.json";
         
-        // Check if JSON file exists
         if (!File.Exists(jsonFilePath))
         {
             Console.WriteLine($"❌ JSON file not found: {jsonFilePath}");
-            Console.WriteLine("Please provide a JSON file or use: dotnet run -- --json-file path/to/file.json");
             Environment.Exit(1);
         }
         
-        // Read and validate JSON
         string clientJson = await File.ReadAllTextAsync(jsonFilePath);
         Console.WriteLine($"Read JSON from {jsonFilePath} ({clientJson.Length} chars)");
         
@@ -40,7 +37,6 @@ class Program
             Environment.Exit(1);
         }
 
-        // Run the client creation
         bool success = await CreateClient(clientJson);
         
         if (!success)
@@ -61,8 +57,7 @@ class Program
             if (string.IsNullOrEmpty(tenant) || string.IsNullOrEmpty(username) || 
                 string.IsNullOrEmpty(password) || string.IsNullOrEmpty(totpSecret))
             {
-                Console.WriteLine("❌ Missing environment variables. Check your GitHub Secrets.");
-                Console.WriteLine("Required: MIJNDIAD_TENANT, MIJNDIAD_USERNAME, MIJNDIAD_PASSWORD, MIJNDIAD_TOTP_SECRET");
+                Console.WriteLine("❌ Missing environment variables");
                 return false;
             }
 
@@ -70,7 +65,6 @@ class Program
             var baseUrl = $"https://{tenant}.mijndiad.nl";
 
             Console.WriteLine($"\nTarget: {baseUrl}");
-            Console.WriteLine($"User: {username}");
 
             var cookieContainer = new CookieContainer();
             var handler = new HttpClientHandler
@@ -107,51 +101,57 @@ class Program
             Console.WriteLine("  ✓ Login successful");
 
             // 2. Setup session
+            Console.WriteLine("\n[2/4] Setting up session...");
             await client.GetAsync($"{baseUrl}/sanctum/csrf-cookie");
             cookieContainer.Add(new Uri(baseUrl), new Cookie("locale", "nl"));
-            await client.GetAsync($"{baseUrl}/clients/create");
+            
+            // Load the form page to get a FRESH CSRF token
+            Console.WriteLine("  Loading form page for fresh CSRF token...");
+            var formPage = await client.GetAsync($"{baseUrl}/clients/create");
+            var formHtml = await formPage.Content.ReadAsStringAsync();
+            
+            // Extract the FRESH CSRF token from the form page HTML
+            var formCsrfMatch = Regex.Match(formHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
+            if (!formCsrfMatch.Success)
+            {
+                Console.WriteLine("❌ No CSRF token in form page");
+                return false;
+            }
+            
+            var freshCsrfToken = formCsrfMatch.Groups[1].Value;
+            Console.WriteLine($"  Fresh CSRF token: {freshCsrfToken.Length} chars");
 
-            // 3. Get cookies
+            // 3. Get session cookies
             var uri = new Uri(baseUrl);
             var cookies = cookieContainer.GetCookies(uri);
             string sessionCookie = "";
             string deviceToken = "";
             string mdsbCookie = "";
-            string jwtXsrfToken = "";
             
             foreach (Cookie c in cookies)
             {
                 if (c.Name == $"{tenant}_session") sessionCookie = c.Value;
                 if (c.Name == "md-device-token") deviceToken = c.Value;
                 if (c.Name == "mdsb") mdsbCookie = c.Value;
-                if (c.Name == "XSRF-TOKEN") jwtXsrfToken = c.Value;
             }
 
-            // 4. Get valid token via address check
-            Console.WriteLine("\n[2/4] Getting valid CSRF token...");
-            string plainXsrfToken = await GetValidCsrfToken(client, baseUrl, tenant, clientJson, 
-                sessionCookie, deviceToken, mdsbCookie, jwtXsrfToken);
+            // Update cookie with the fresh token
+            cookieContainer.Add(uri, new Cookie("XSRF-TOKEN", freshCsrfToken));
 
-            if (string.IsNullOrEmpty(plainXsrfToken))
-            {
-                Console.WriteLine("❌ Could not obtain valid CSRF token");
-                return false;
-            }
+            // 4. Prepare MINIMAL form data (only mandatory fields + what's in JSON)
+            Console.WriteLine("\n[3/4] Preparing form data...");
+            var formData = BuildMinimalFormData(clientJson);
 
-            // 5. Prepare form data
-            Console.WriteLine("\n[3/4] Preparing client data...");
-            var formData = BuildFormData(clientJson);
-
-            // 6. Create client
+            // 5. Create client with FRESH token
             Console.WriteLine("\n[4/4] Creating client...");
-            string cookieHeader = $"locale=nl; md-device-token={deviceToken}; addToHomescreenCalled=true; mdsb={mdsbCookie}; {tenant}_session={sessionCookie}; XSRF-TOKEN={plainXsrfToken}";
+            string cookieHeader = $"locale=nl; md-device-token={deviceToken}; addToHomescreenCalled=true; mdsb={mdsbCookie}; {tenant}_session={sessionCookie}; XSRF-TOKEN={freshCsrfToken}";
             
             var clientRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients")
             {
                 Content = formData
             };
 
-            clientRequest.Headers.Add("x-csrf-token", plainXsrfToken);
+            clientRequest.Headers.Add("x-csrf-token", freshCsrfToken);
             clientRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
             clientRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
             clientRequest.Headers.Add("Origin", baseUrl);
@@ -159,7 +159,7 @@ class Program
             clientRequest.Headers.Add("Accept", "application/json, text/plain, */*");
             clientRequest.Headers.Add("Accept-Language", "nl");
 
-            Console.WriteLine($"  Using token: {plainXsrfToken.Substring(0, Math.Min(10, plainXsrfToken.Length))}...");
+            Console.WriteLine($"  Using fresh CSRF token from form page");
 
             var response = await client.SendAsync(clientRequest);
             var responseBody = await response.Content.ReadAsStringAsync();
@@ -188,14 +188,114 @@ class Program
             else
             {
                 Console.WriteLine($"\n❌ Client creation failed: {response.StatusCode}");
+                
+                // Debug: Show what we sent
+                Console.WriteLine("\n=== DEBUG INFO ===");
+                Console.WriteLine($"CSRF Token: {freshCsrfToken}");
+                Console.WriteLine($"Session cookie length: {sessionCookie?.Length ?? 0}");
+                Console.WriteLine($"Form data fields: {formData.Count()}");
+                
                 return false;
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"\n❌ Unexpected error: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
             return false;
         }
+    }
+
+    static MultipartFormDataContent BuildMinimalFormData(string json)
+    {
+        var formData = new MultipartFormDataContent();
+        var data = JsonSerializer.Deserialize<JsonElement>(json);
+        
+        // Extract only the fields we need
+        var fieldMappings = new Dictionary<string, string>
+        {
+            { "salutation", "salutation" },
+            { "firstname", "firstname" },
+            { "lastname", "lastname" },        // MANDATORY
+            { "gender", "gender" },
+            { "date_of_birth", "date_of_birth" },
+            { "date_of_intake", "date_of_intake" },
+            { "email", "email" },              // MANDATORY
+            { "mobilenumber", "mobilenumber" },
+            { "reminder", "reminder" },
+            { "confirmation", "confirmation" },
+            { "invoice_relation_id", "invoice_relation_id" },  // MANDATORY
+            { "invoice_send_method", "invoice_send_method" },
+            { "is_active", "is_active" },
+            { "different_post_address", "different_post_address" },
+            { "allow_dubble_email", "allow_dubble_email" }
+        };
+
+        foreach (var mapping in fieldMappings)
+        {
+            if (data.TryGetProperty(mapping.Key, out var value))
+            {
+                string stringValue = GetStringValue(value);
+                formData.Add(new StringContent(stringValue), mapping.Value);
+            }
+            else
+            {
+                // Add empty value for optional fields
+                formData.Add(new StringContent(""), mapping.Value);
+            }
+        }
+
+        // Handle nested objects
+        if (data.TryGetProperty("address", out var address))
+        {
+            AddNestedObject(formData, address, "address");
+        }
+        else
+        {
+            // Add empty address fields
+            formData.Add(new StringContent(""), "address[country]");
+            formData.Add(new StringContent(""), "address[zipcode]");
+            formData.Add(new StringContent(""), "address[house_number]");
+            formData.Add(new StringContent(""), "address[street]");
+            formData.Add(new StringContent(""), "address[city]");
+        }
+
+        if (data.TryGetProperty("invoice_address", out var invoiceAddress))
+        {
+            AddNestedObject(formData, invoiceAddress, "invoice_address");
+        }
+
+        // Add empty arrays
+        formData.Add(new StringContent(""), "client_attributes[]");
+        formData.Add(new StringContent(""), "client_group_ids");
+
+        return formData;
+    }
+
+    static void AddNestedObject(MultipartFormDataContent formData, JsonElement element, string prefix)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in element.EnumerateObject())
+            {
+                string key = $"{prefix}[{prop.Name}]";
+                string value = GetStringValue(prop.Value);
+                formData.Add(new StringContent(value), key);
+            }
+        }
+    }
+
+    static string GetStringValue(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString() ?? "",
+            JsonValueKind.Number => element.GetRawText(),
+            JsonValueKind.True => "1",
+            JsonValueKind.False => "0",
+            JsonValueKind.Null => "",
+            _ => element.ToString()
+        };
     }
 
     static async Task<string> GetLoginCsrfToken(HttpClient client, string baseUrl)
@@ -210,156 +310,6 @@ class Program
         }
         
         return csrfMatch.Groups[1].Value;
-    }
-
-    static async Task<string> GetValidCsrfToken(HttpClient client, string baseUrl, string tenant, 
-        string clientJson, string sessionCookie, string deviceToken, string mdsbCookie, string jwtXsrfToken)
-    {
-        var uri = new Uri(baseUrl);
-        
-        // Try to extract address from JSON
-        string zipcode = "";
-        string houseNumber = "";
-        
-        try
-        {
-            var clientData = JsonSerializer.Deserialize<JsonElement>(clientJson);
-            if (clientData.TryGetProperty("address", out var address))
-            {
-                if (address.TryGetProperty("zipcode", out var zip) && !string.IsNullOrEmpty(zip.GetString()))
-                    zipcode = zip.GetString();
-                if (address.TryGetProperty("house_number", out var house) && !string.IsNullOrEmpty(house.GetString()))
-                    houseNumber = house.GetString();
-            }
-        }
-        catch { }
-
-        // If no valid address in JSON, use a default valid one
-        if (string.IsNullOrEmpty(zipcode) || !IsValidDutchZipcode(zipcode))
-        {
-            Console.WriteLine($"  Using default valid address (provided: {zipcode})");
-            zipcode = "1011AA";
-            houseNumber = "1";
-        }
-
-        // Build cookie header
-        string cookieHeader = $"locale=nl; md-device-token={deviceToken}; addToHomescreenCalled=true; mdsb={mdsbCookie}; {tenant}_session={sessionCookie}; XSRF-TOKEN={jwtXsrfToken}";
-        
-        var addressCheckData = new { 
-            zipcode = zipcode,
-            house_number = houseNumber 
-        };
-        
-        var addressContent = new StringContent(JsonSerializer.Serialize(addressCheckData), Encoding.UTF8, "application/json");
-        
-        var addressRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/address/check")
-        {
-            Content = addressContent
-        };
-        
-        addressRequest.Headers.Add("x-csrf-token", jwtXsrfToken);
-        addressRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
-        addressRequest.Headers.Add("Origin", baseUrl);
-        addressRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
-        addressRequest.Headers.Add("Cookie", cookieHeader);
-        addressRequest.Headers.Add("Accept", "application/json, text/plain, */*");
-        addressRequest.Headers.Add("Accept-Language", "nl");
-
-        var addressResponse = await client.SendAsync(addressRequest);
-        
-        if (addressResponse.StatusCode == HttpStatusCode.OK)
-        {
-            Console.WriteLine($"  ✓ Address check successful");
-            
-            // Extract token from Set-Cookie
-            if (addressResponse.Headers.TryGetValues("Set-Cookie", out var setCookies))
-            {
-                foreach (var setCookie in setCookies)
-                {
-                    if (setCookie.Contains("XSRF-TOKEN="))
-                    {
-                        var match = Regex.Match(setCookie, @"XSRF-TOKEN=([^;]+)");
-                        if (match.Success)
-                        {
-                            var token = match.Groups[1].Value;
-                            Console.WriteLine($"  Obtained valid CSRF token ({token.Length} chars)");
-                            
-                            // Update cookie container
-                            cookieContainer.Add(uri, new Cookie("XSRF-TOKEN", token));
-                            return token;
-                        }
-                    }
-                }
-            }
-        }
-        else
-        {
-            Console.WriteLine($"  ⚠️ Address check failed: {addressResponse.StatusCode}");
-            Console.WriteLine($"  Using JWT token as fallback");
-            return jwtXsrfToken;
-        }
-        
-        return jwtXsrfToken; // Fallback
-    }
-
-    static bool IsValidDutchZipcode(string zipcode)
-    {
-        // Basic Dutch zipcode validation: 4 digits + 2 letters (e.g., 1234AB)
-        if (string.IsNullOrEmpty(zipcode) || zipcode.Length != 6)
-            return false;
-            
-        var digits = zipcode.Substring(0, 4);
-        var letters = zipcode.Substring(4, 2);
-        
-        return digits.All(char.IsDigit) && letters.All(char.IsLetter);
-    }
-
-    static CookieContainer cookieContainer = new CookieContainer();
-
-    static MultipartFormDataContent BuildFormData(string json)
-    {
-        var formData = new MultipartFormDataContent();
-        var data = JsonSerializer.Deserialize<JsonElement>(json);
-        
-        AddToFormData(formData, data, "");
-        return formData;
-    }
-
-    static void AddToFormData(MultipartFormDataContent formData, JsonElement element, string prefix)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.Object:
-                foreach (var prop in element.EnumerateObject())
-                {
-                    string key = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}[{prop.Name}]";
-                    AddToFormData(formData, prop.Value, key);
-                }
-                break;
-                
-            case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
-                {
-                    AddToFormData(formData, item, $"{prefix}[]");
-                }
-                if (!element.EnumerateArray().Any())
-                {
-                    formData.Add(new StringContent(""), $"{prefix}[]");
-                }
-                break;
-                
-            default:
-                string value = element.ValueKind switch
-                {
-                    JsonValueKind.String => element.GetString() ?? "",
-                    JsonValueKind.Number => element.GetRawText(),
-                    JsonValueKind.True => "1",
-                    JsonValueKind.False => "0",
-                    _ => ""
-                };
-                formData.Add(new StringContent(value), prefix);
-                break;
-        }
     }
 
     static string GenerateTotp(string base32Secret)
