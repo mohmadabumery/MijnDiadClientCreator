@@ -367,7 +367,7 @@ class Program
                 }
             }
 
-            // Handle invoice_address - FIXED TYPO HERE: kvp not kp
+            // Handle invoice_address
             if (data != null && data.TryGetValue("invoice_address", out object? invAddrObj) && invAddrObj is JsonElement invAddrElement)
             {
                 if (invAddrElement.ValueKind == JsonValueKind.Object)
@@ -375,7 +375,7 @@ class Program
                     var invAddrDict = JsonSerializer.Deserialize<Dictionary<string, object>>(invAddrElement.GetRawText());
                     if (invAddrDict != null)
                     {
-                        foreach (var kvp in invAddrDict) // Fixed: kvp not kp
+                        foreach (var kvp in invAddrDict)
                         {
                             if (kvp.Value is JsonElement element)
                             {
