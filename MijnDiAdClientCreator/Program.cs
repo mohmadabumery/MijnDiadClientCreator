@@ -39,6 +39,7 @@ class Program
 
         using var client = new HttpClient(handler);
         client.Timeout = TimeSpan.FromSeconds(30);
+        client.DefaultRequestHeaders.Add("User-Agent", "MijnDiAdClientCreator/1.0");
 
         // 1️⃣ Fetch login page
         Console.WriteLine("[1/6] Fetching login page...");
@@ -61,20 +62,20 @@ class Program
         Console.WriteLine("[3/6] Logging in...");
         Console.WriteLine($"  Generated TOTP: {totp}");
 
-        client.DefaultRequestHeaders.Clear();
-        client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
-        client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
-        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", csrfToken);
-        client.DefaultRequestHeaders.Add("Origin", baseUrl);
-        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/login");
-
         var loginPayload = new
         {
             email = username,
             password = password,
             totp_code = totp
         };
+        
         var loginContent = new StringContent(JsonSerializer.Serialize(loginPayload), Encoding.UTF8, "application/json");
+        loginContent.Headers.Clear();
+        loginContent.Headers.Add("Content-Type", "application/json");
+        loginContent.Headers.Add("Accept", "application/json");
+        loginContent.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        loginContent.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        
         var loginResponse = await client.PostAsync($"{baseUrl}/api/login", loginContent);
         var loginBody = await loginResponse.Content.ReadAsStringAsync();
 
@@ -86,48 +87,63 @@ class Program
         }
         Console.WriteLine("  ✓ Login successful");
 
-        // 4️⃣ Refresh Sanctum CSRF cookie
-        Console.WriteLine("[4/6] Refreshing Sanctum CSRF...");
+        // 4️⃣ Get Sanctum CSRF cookie (crucial for Laravel Sanctum)
+        Console.WriteLine("[4/6] Getting Sanctum CSRF cookie...");
         var sanctumResponse = await client.GetAsync($"{baseUrl}/sanctum/csrf-cookie");
         sanctumResponse.EnsureSuccessStatusCode();
-        Console.WriteLine("  ✓ Sanctum CSRF refreshed");
+        Console.WriteLine("  ✓ Sanctum CSRF cookie set");
 
         // 5️⃣ Extract cookies
         Console.WriteLine("[5/6] Extracting cookies...");
         var cookies = cookieContainer.GetCookies(new Uri(baseUrl));
-        string xsrf = null, session = null;
+        string xsrfToken = null, sessionCookie = null;
 
         foreach (Cookie c in cookies)
         {
-            if (c.Name == "XSRF-TOKEN") xsrf = c.Value;
-            if (c.Name == $"{tenant}_session") session = c.Value;
+            if (c.Name == "XSRF-TOKEN") xsrfToken = Uri.UnescapeDataString(c.Value);
+            if (c.Name == $"{tenant}_session") sessionCookie = c.Value;
         }
 
-        if (string.IsNullOrEmpty(xsrf) || string.IsNullOrEmpty(session))
+        if (string.IsNullOrEmpty(xsrfToken) || string.IsNullOrEmpty(sessionCookie))
         {
             Console.WriteLine("❌ Required cookies missing");
+            Console.WriteLine($"XSRF-TOKEN: {xsrfToken?.Length ?? 0} chars");
+            Console.WriteLine($"Session: {sessionCookie?.Length ?? 0} chars");
             Environment.Exit(1);
         }
 
-        Console.WriteLine($"  ✓ Session cookie length: {session.Length}");
-        Console.WriteLine($"  ✓ XSRF token length: {xsrf.Length}");
+        Console.WriteLine($"  ✓ Session cookie: {sessionCookie.Length} chars");
+        Console.WriteLine($"  ✓ XSRF token: {xsrfToken.Length} chars");
 
-        // 6️⃣ Bind session to API (important for Sanctum)
-        Console.WriteLine("[6/7] Binding session to API (/api/user)...");
+        // 6️⃣ Bind session to API by fetching user info
+        Console.WriteLine("[6/7] Verifying authenticated session...");
         client.DefaultRequestHeaders.Clear();
-        client.DefaultRequestHeaders.Add("Accept", "application/json");
-        client.DefaultRequestHeaders.Add("X-XSRF-TOKEN", xsrf);
+        client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
-        client.DefaultRequestHeaders.Add("Origin", baseUrl);
-        client.DefaultRequestHeaders.Add("Referer", baseUrl);
+        client.DefaultRequestHeaders.Add("X-XSRF-TOKEN", xsrfToken);
+        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/");
 
-        var userBind = await client.GetAsync($"{baseUrl}/api/user");
-        userBind.EnsureSuccessStatusCode();
-        Console.WriteLine("  ✓ API session bound");
+        var userResponse = await client.GetAsync($"{baseUrl}/api/user");
+        var userBody = await userResponse.Content.ReadAsStringAsync();
+        
+        if (!userResponse.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"❌ Session verification failed: {(int)userResponse.StatusCode}");
+            Console.WriteLine(userBody);
+            Environment.Exit(1);
+        }
+        Console.WriteLine("  ✓ Session verified and bound");
 
-        // 7️⃣ Create client
+        // 7️⃣ Create client with proper headers
         Console.WriteLine("[7/7] Creating client...");
+        
         var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
+        clientContent.Headers.Clear();
+        clientContent.Headers.Add("Content-Type", "application/json");
+        clientContent.Headers.Add("X-XSRF-TOKEN", xsrfToken);
+        clientContent.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        clientContent.Headers.Add("Referer", $"{baseUrl}/clients/create");
+        
         var clientResponse = await client.PostAsync($"{baseUrl}/api/clients", clientContent);
         var clientResponseBody = await clientResponse.Content.ReadAsStringAsync();
 
