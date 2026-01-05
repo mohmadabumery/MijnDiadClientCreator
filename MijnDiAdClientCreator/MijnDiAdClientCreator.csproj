@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Correct NuGet package name for TOTP generation -->
+    <!-- TOTP library -->
     <PackageReference Include="Otp.NET" Version="1.4.1" />
   </ItemGroup>
 
