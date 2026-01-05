@@ -6,16 +6,21 @@ on:
       client_json:
         description: 'Client JSON payload'
         required: true
-        default: '{}'
+        default: '{"firstname":"Test","lastname":"User","email":"test@example.com","gender":"1","invoice_relation_id":"15","address":{"zipcode":"1011AA","house_number":"1","street":"Teststraat","city":"Amsterdam"}}'
+      validate_address:
+        description: 'Validate address before creating client'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
   create-client:
     runs-on: self-hosted
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Verify .NET Installation
+      - name: Setup .NET
         run: dotnet --version
         shell: cmd
 
@@ -23,19 +28,25 @@ jobs:
         run: dotnet restore MijnDiAdClientCreator/MijnDiAdClientCreator.csproj
         shell: cmd
 
-      - name: Build project
+      - name: Build application
         run: dotnet build MijnDiAdClientCreator/MijnDiAdClientCreator.csproj --configuration Release --no-restore
         shell: cmd
 
-      - name: Create JSON file
-        run: |
-          echo {"salutation":"","firstname":"Mohmad","lastname":"Abumery","gender":"1","date_of_birth":"2025-11-12","date_of_intake":"2026-01-05T12:36:41Z","email":"mohmadabumery@gmail.com","mobilenumber":"","reminder":"1","confirmation":"1","invoice_relation_id":"15","invoice_send_method":"1","is_active":"1","address":{"country":"","zipcode":"rr2131","house_number":"","street":"sad","city":"enscehde"},"invoice_address":{"country":"NL"},"different_post_address":"0","client_attributes":[],"client_group_ids":null,"allow_dubble_email":"0"} > client_data.json
-          type client_data.json
+      - name: Create JSON input file
         shell: cmd
+        run: |
+          echo Creating client_data.json from workflow input...
+          echo %CLIENT_JSON% > client_data.json
+          echo File created. First 200 characters:
+          powershell -Command "Get-Content client_data.json -TotalCount 1 | ForEach-Object { $_.Substring(0, [Math]::Min(200, $_.Length)) }"
+        env:
+          CLIENT_JSON: '${{ github.event.inputs.client_json }}'
 
       - name: Run client creation
-        run: dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json-file client_data.json
         shell: cmd
+        run: |
+          echo Running client creation with dynamic input...
+          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json-file client_data.json
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
@@ -44,10 +55,10 @@ jobs:
 
       - name: Workflow Summary
         if: always()
+        shell: cmd
         run: |
           if %ERRORLEVEL%==0 (
             echo ✅ Client successfully created in MijnDiAd EPD
           ) else (
             echo ❌ Failed to create client - check logs above
           )
-        shell: cmd
