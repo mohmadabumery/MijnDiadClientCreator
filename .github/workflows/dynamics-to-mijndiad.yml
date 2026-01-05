@@ -10,17 +10,16 @@ on:
 
 jobs:
   create-client:
-    runs-on: self-hosted  # Changed from ubuntu-latest
+    runs-on: self-hosted
     steps:
       # 1️⃣ Checkout repository
       - name: Checkout repo
         uses: actions/checkout@v3
       
-      # 2️⃣ Setup .NET (may already be installed on your PC)
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: '8.0.x'
+      # 2️⃣ Verify .NET is installed (skip installation on self-hosted)
+      - name: Verify .NET Installation
+        run: dotnet --version
+        shell: pwsh
       
       # 3️⃣ Restore dependencies
       - name: Restore dependencies
