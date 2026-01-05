@@ -12,40 +12,32 @@ jobs:
   create-client:
     runs-on: self-hosted
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout repo
         uses: actions/checkout@v3
-      
-      # 2️⃣ Verify .NET is installed (skip installation on self-hosted)
+
       - name: Verify .NET Installation
         run: dotnet --version
-        shell: pwsh
-      
-      # 3️⃣ Restore dependencies
+
       - name: Restore dependencies
         run: dotnet restore MijnDiAdClientCreator/MijnDiAdClientCreator.csproj
-      
-      # 4️⃣ Build the project
+
       - name: Build project
         run: dotnet build MijnDiAdClientCreator/MijnDiAdClientCreator.csproj --configuration Release
-      
-      # 5️⃣ Run client creation
+
       - name: Run client creation
         run: |
-          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json "${{ github.event.inputs.client_json }}"
+          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json '${{ github.event.inputs.client_json }}'
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
           MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
           MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
-      
-      # 6️⃣ Summary
+
       - name: Workflow Summary
         if: always()
         run: |
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "✅ Client successfully created in MijnDiAd EPD"
-          } else {
-            Write-Host "❌ Failed to create client - check logs above"
-          }
-        shell: pwsh
+          if [ $? -eq 0 ]; then
+            echo "✅ Client successfully created in MijnDiAd EPD"
+          else
+            echo "❌ Failed to create client - check logs above"
+          fi
