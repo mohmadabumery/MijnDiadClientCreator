@@ -9,8 +9,6 @@
 
   <ItemGroup>
     <PackageReference Include="Otp.NET" Version="1.4.1" />
-    <!-- Add this for HttpUtility -->
-    <PackageReference Include="System.Web.HttpUtility" Version="4.3.0" />
   </ItemGroup>
 
 </Project>
