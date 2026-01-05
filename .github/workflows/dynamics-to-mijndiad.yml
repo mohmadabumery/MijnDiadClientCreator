@@ -30,9 +30,24 @@ jobs:
       - name: Run client creation
         shell: cmd
         run: |
-          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json '${{ github.event.inputs.client_json }}'
+          # Create a JSON file to avoid quoting issues
+          echo ${{ github.event.inputs.client_json }} > client_data.json
+          type client_data.json
+          
+          # Run with JSON file content
+          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json "$(type client_data.json)"
         env:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
           MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
           MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
+
+      - name: Workflow Summary
+        if: always()
+        shell: cmd
+        run: |
+          if %ERRORLEVEL%==0 (
+            echo ✅ Client successfully created in MijnDiAd EPD
+          ) else (
+            echo ❌ Failed to create client - check logs above
+          )
