@@ -20,6 +20,8 @@ class Program
         var password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD")!;
         var totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET")!;
 
+        var baseUrl = $"https://{tenant}.mijndiad.nl";
+
         Console.WriteLine("== MijnDiAd Auto-Login & Client Creation ==");
         Console.WriteLine($"Running on: {Environment.MachineName}");
 
@@ -31,16 +33,19 @@ class Program
             AutomaticDecompression = DecompressionMethods.All
         };
 
-        using var client = new HttpClient(handler);
+        using var client = new HttpClient(handler)
+        {
+            BaseAddress = new Uri(baseUrl)
+        };
 
         // 1️⃣ Fetch login page
         Console.WriteLine("[1/6] Fetching login page...");
-        var loginPage = await client.GetAsync($"https://{tenant}.mijndiad.nl/login");
-        var html = await loginPage.Content.ReadAsStringAsync();
+        var loginHtml = await client.GetStringAsync("/login");
 
         // 2️⃣ Extract CSRF
         Console.WriteLine("[2/6] Extracting CSRF token...");
-        var csrf = Regex.Match(html, "<meta name=\"csrf-token\" content=\"([^\"]+)\"").Groups[1].Value;
+        var csrf = Regex.Match(loginHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"")
+                        .Groups[1].Value;
 
         // 3️⃣ Login
         Console.WriteLine("[3/6] Logging in...");
@@ -50,9 +55,11 @@ class Program
         client.DefaultRequestHeaders.Add("Accept", "application/json");
         client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", csrf);
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+        client.DefaultRequestHeaders.Add("Origin", baseUrl);
+        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/login");
 
         var loginResponse = await client.PostAsync(
-            $"https://{tenant}.mijndiad.nl/api/login",
+            "/api/login",
             new StringContent(JsonSerializer.Serialize(new
             {
                 email = username,
@@ -64,15 +71,15 @@ class Program
         loginResponse.EnsureSuccessStatusCode();
         Console.WriteLine("  ✓ Login successful");
 
-        // 4️⃣ Sanctum CSRF refresh (🔥 REQUIRED)
+        // 4️⃣ Sanctum CSRF cookie
         Console.WriteLine("[4/6] Refreshing Sanctum CSRF...");
-        var sanctum = await client.GetAsync($"https://{tenant}.mijndiad.nl/sanctum/csrf-cookie");
+        var sanctum = await client.GetAsync("/sanctum/csrf-cookie");
         sanctum.EnsureSuccessStatusCode();
         Console.WriteLine("  ✓ Sanctum CSRF refreshed");
 
         // 5️⃣ Extract XSRF token
         Console.WriteLine("[5/6] Extracting cookies...");
-        var jar = cookies.GetCookies(new Uri($"https://{tenant}.mijndiad.nl"));
+        var jar = cookies.GetCookies(new Uri(baseUrl));
 
         string xsrf = null!;
         foreach (Cookie c in jar)
@@ -82,16 +89,18 @@ class Program
         if (xsrf == null)
             throw new Exception("XSRF token missing");
 
-        // 6️⃣ Create client
+        // 6️⃣ Create client (🚨 browser-like headers)
         Console.WriteLine("[6/6] Creating client...");
 
         client.DefaultRequestHeaders.Clear();
         client.DefaultRequestHeaders.Add("Accept", "application/json");
         client.DefaultRequestHeaders.Add("X-XSRF-TOKEN", xsrf);
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+        client.DefaultRequestHeaders.Add("Origin", baseUrl);
+        client.DefaultRequestHeaders.Add("Referer", $"{baseUrl}/clients");
 
         var create = await client.PostAsync(
-            $"https://{tenant}.mijndiad.nl/api/clients",
+            "/api/clients",
             new StringContent(clientJson, Encoding.UTF8, "application/json")
         );
 
