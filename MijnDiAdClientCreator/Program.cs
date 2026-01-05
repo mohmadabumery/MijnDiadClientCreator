@@ -42,14 +42,14 @@ class Program
         try
         {
             // 1. GET login page
-            Console.WriteLine("\n[1/5] Getting login page...");
+            Console.WriteLine("\n[1/7] Getting login page...");
             var loginPage = await client.GetAsync($"{baseUrl}/login");
             var loginHtml = await loginPage.Content.ReadAsStringAsync();
             var csrfMatch = Regex.Match(loginHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
             var loginCsrf = csrfMatch.Groups[1].Value;
 
             // 2. Login
-            Console.WriteLine("\n[2/5] Logging in...");
+            Console.WriteLine("\n[2/7] Logging in...");
             var loginData = new { email = username, password = password, totp_code = totp };
             var loginContent = new StringContent(JsonSerializer.Serialize(loginData), Encoding.UTF8, "application/json");
             
@@ -73,154 +73,170 @@ class Program
             cookieContainer.Add(new Uri(baseUrl), new Cookie("locale", "nl"));
 
             // 4. Load form page
-            Console.WriteLine("\n[3/5] Loading form page...");
-            var formResponse = await client.GetAsync($"{baseUrl}/clients/create");
-            var formHtml = await formResponse.Content.ReadAsStringAsync();
-            
-            // Get HTML token
-            var formCsrfMatch = Regex.Match(formHtml, "<meta name=\"csrf-token\" content=\"([^\"]+)\"");
-            var htmlToken = formCsrfMatch.Success ? formCsrfMatch.Groups[1].Value : "";
-            Console.WriteLine($"  HTML token: {htmlToken}");
+            Console.WriteLine("\n[3/7] Loading form page...");
+            await client.GetAsync($"{baseUrl}/clients/create");
 
-            // 5. Get JWT cookie and decode it
-            Console.WriteLine("\n[4/5] Decoding JWT token...");
+            // 5. Get initial cookies
             var uri = new Uri(baseUrl);
             var cookies = cookieContainer.GetCookies(uri);
-            
-            string jwtToken = "";
             string sessionCookie = "";
             string deviceToken = "";
             string mdsbCookie = "";
+            string oldXsrfToken = "";
             
             foreach (Cookie c in cookies)
             {
-                if (c.Name == "XSRF-TOKEN") jwtToken = c.Value;
                 if (c.Name == $"{tenant}_session") sessionCookie = c.Value;
                 if (c.Name == "md-device-token") deviceToken = c.Value;
                 if (c.Name == "mdsb") mdsbCookie = c.Value;
+                if (c.Name == "XSRF-TOKEN") oldXsrfToken = c.Value;
             }
 
-            // DECODE the JWT to get actual token
-            string decodedToken = DecodeJwtToken(jwtToken);
-            Console.WriteLine($"  JWT token: {jwtToken.Substring(0, Math.Min(30, jwtToken.Length))}...");
-            Console.WriteLine($"  Decoded token: {decodedToken?.Substring(0, Math.Min(30, decodedToken?.Length ?? 0))}...");
+            Console.WriteLine($"  Session: {sessionCookie.Length} chars");
+            Console.WriteLine($"  Old XSRF: {oldXsrfToken.Length} chars");
 
-            // 6. Prepare form data
-            Console.WriteLine("\n[5/5] Creating client...");
-            var formData = BuildFormData(clientJson);
+            // 6. CRITICAL: Call /api/address/check to get FRESH token
+            Console.WriteLine("\n[4/7] Calling /api/address/check for fresh token...");
             
-            // Try BOTH tokens (decoded JWT and HTML)
-            var tokensToTry = new[] { decodedToken, htmlToken };
-            var tokenNames = new[] { "Decoded JWT", "HTML" };
+            // Extract address from JSON
+            var clientData = JsonSerializer.Deserialize<JsonElement>(clientJson);
+            string zipcode = "";
+            string houseNumber = "";
             
-            for (int i = 0; i < tokensToTry.Length; i++)
+            if (clientData.TryGetProperty("address", out var address))
             {
-                if (string.IsNullOrEmpty(tokensToTry[i])) continue;
-                
-                Console.WriteLine($"\n  Attempt {i+1}: {tokenNames[i]} token...");
-                
-                string cookieHeader = $"locale=nl; md-device-token={deviceToken}; addToHomescreenCalled=true; mdsb={mdsbCookie}; {tenant}_session={sessionCookie}; XSRF-TOKEN={jwtToken}";
-                
-                var clientRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients")
-                {
-                    Content = formData
-                };
+                if (address.TryGetProperty("zipcode", out var zip)) zipcode = zip.GetString() ?? "";
+                if (address.TryGetProperty("house_number", out var house)) houseNumber = house.GetString() ?? "";
+            }
 
-                clientRequest.Headers.Add("x-csrf-token", tokensToTry[i]); // lowercase!
-                clientRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
-                clientRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
-                clientRequest.Headers.Add("Origin", baseUrl);
-                clientRequest.Headers.Add("Cookie", cookieHeader);
-                clientRequest.Headers.Add("Accept", "application/json, text/plain, */*");
-                clientRequest.Headers.Add("Accept-Language", "nl");
+            var addressCheckData = new { zipcode = zipcode, house_number = houseNumber };
+            var addressContent = new StringContent(JsonSerializer.Serialize(addressCheckData), Encoding.UTF8, "application/json");
+            
+            var addressRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/address/check")
+            {
+                Content = addressContent
+            };
+            
+            // Build cookie header with OLD token
+            string cookieHeader = $"locale=nl; md-device-token={deviceToken}; addToHomescreenCalled=true; mdsb={mdsbCookie}; {tenant}_session={sessionCookie}; XSRF-TOKEN={oldXsrfToken}";
+            
+            addressRequest.Headers.Add("x-csrf-token", oldXsrfToken);
+            addressRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+            addressRequest.Headers.Add("Origin", baseUrl);
+            addressRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
+            addressRequest.Headers.Add("Cookie", cookieHeader);
+            addressRequest.Headers.Add("Accept", "application/json, text/plain, */*");
+            addressRequest.Headers.Add("Accept-Language", "nl");
 
-                var response = await client.SendAsync(clientRequest);
-                var responseBody = await response.Content.ReadAsStringAsync();
-                
-                Console.WriteLine($"    Status: {response.StatusCode}");
-                
-                if (response.IsSuccessStatusCode)
+            var addressResponse = await client.SendAsync(addressRequest);
+            var addressBody = await addressResponse.Content.ReadAsStringAsync();
+            
+            Console.WriteLine($"  Address check status: {addressResponse.StatusCode}");
+            
+            // Extract NEW token from Set-Cookie header
+            string freshXsrfToken = "";
+            if (addressResponse.Headers.TryGetValues("Set-Cookie", out var setCookies))
+            {
+                foreach (var setCookie in setCookies)
                 {
-                    Console.WriteLine($"\n✅✅✅ SUCCESS with {tokenNames[i]} token! ✅✅✅");
-                    if (!string.IsNullOrEmpty(responseBody))
+                    if (setCookie.Contains("XSRF-TOKEN="))
                     {
-                        try
+                        var match = Regex.Match(setCookie, @"XSRF-TOKEN=([^;]+)");
+                        if (match.Success)
                         {
-                            var json = JsonSerializer.Deserialize<JsonElement>(responseBody);
-                            Console.WriteLine(JsonSerializer.Serialize(json, new JsonSerializerOptions { WriteIndented = true }));
-                        }
-                        catch
-                        {
-                            Console.WriteLine($"Response: {responseBody}");
+                            freshXsrfToken = match.Groups[1].Value;
+                            Console.WriteLine($"  Fresh XSRF token: {freshXsrfToken}");
+                            
+                            // Update cookie container with new token
+                            cookieContainer.Add(uri, new Cookie("XSRF-TOKEN", freshXsrfToken));
                         }
                     }
-                    return;
-                }
-                else
-                {
-                    Console.WriteLine($"    Response: {responseBody}");
                 }
             }
+
+            if (string.IsNullOrEmpty(freshXsrfToken))
+            {
+                Console.WriteLine("❌ No fresh token from address check");
+                freshXsrfToken = oldXsrfToken; // Fallback
+            }
+
+            // 7. Prepare form data for client creation
+            Console.WriteLine("\n[5/7] Preparing form data...");
+            var formData = BuildFormData(clientJson);
+
+            // 8. Create client with FRESH token
+            Console.WriteLine("\n[6/7] Creating client...");
             
-            Console.WriteLine("\n❌ All attempts failed");
-            Console.WriteLine("\n=== DEBUG ===");
-            Console.WriteLine($"JWT: {jwtToken}");
-            Console.WriteLine($"Decoded: {decodedToken}");
-            Console.WriteLine($"HTML: {htmlToken}");
-            Console.WriteLine($"Session: {sessionCookie.Length} chars");
-            Environment.Exit(1);
+            // Update cookie header with FRESH token
+            cookieHeader = $"locale=nl; md-device-token={deviceToken}; addToHomescreenCalled=true; mdsb={mdsbCookie}; {tenant}_session={sessionCookie}; XSRF-TOKEN={freshXsrfToken}";
+            
+            var clientRequest = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/clients")
+            {
+                Content = formData
+            };
+
+            clientRequest.Headers.Add("x-csrf-token", freshXsrfToken);
+            clientRequest.Headers.Add("X-Requested-With", "XMLHttpRequest");
+            clientRequest.Headers.Add("Referer", $"{baseUrl}/clients/create");
+            clientRequest.Headers.Add("Origin", baseUrl);
+            clientRequest.Headers.Add("Cookie", cookieHeader);
+            clientRequest.Headers.Add("Accept", "application/json, text/plain, */*");
+            clientRequest.Headers.Add("Accept-Language", "nl");
+
+            Console.WriteLine($"  Using fresh token: {freshXsrfToken}");
+
+            var response = await client.SendAsync(clientRequest);
+            var responseBody = await response.Content.ReadAsStringAsync();
+            
+            Console.WriteLine($"\n[7/7] Response:");
+            Console.WriteLine($"Status: {response.StatusCode}");
+            
+            if (!string.IsNullOrEmpty(responseBody))
+            {
+                try
+                {
+                    var json = JsonSerializer.Deserialize<JsonElement>(responseBody);
+                    Console.WriteLine(JsonSerializer.Serialize(json, new JsonSerializerOptions { WriteIndented = true }));
+                }
+                catch
+                {
+                    Console.WriteLine(responseBody);
+                }
+            }
+
+            if (response.IsSuccessStatusCode)
+            {
+                Console.WriteLine("\n✅✅✅ SUCCESS! Client created ✅✅✅");
+            }
+            else
+            {
+                Console.WriteLine($"\n❌ Failed: {response.StatusCode}");
+                
+                // If failed with fresh token, try old token as fallback
+                if (freshXsrfToken != oldXsrfToken)
+                {
+                    Console.WriteLine("\n⚠️  Trying with old token as fallback...");
+                    clientRequest.Headers.Remove("x-csrf-token");
+                    clientRequest.Headers.Add("x-csrf-token", oldXsrfToken);
+                    clientRequest.Headers.Remove("Cookie");
+                    clientRequest.Headers.Add("Cookie", cookieHeader.Replace(freshXsrfToken, oldXsrfToken));
+                    
+                    var retry = await client.SendAsync(clientRequest);
+                    Console.WriteLine($"Retry Status: {retry.StatusCode}");
+                    if (retry.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine("\n✅✅✅ SUCCESS with old token! ✅✅✅");
+                        return;
+                    }
+                }
+                
+                Environment.Exit(1);
+            }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"\n❌ Error: {ex.Message}");
             Environment.Exit(1);
-        }
-    }
-
-    // Decode JWT token to extract the actual CSRF token
-    static string DecodeJwtToken(string jwt)
-    {
-        if (string.IsNullOrEmpty(jwt) || !jwt.Contains('.'))
-            return jwt;
-        
-        try
-        {
-            // JWT format: header.payload.signature
-            var parts = jwt.Split('.');
-            if (parts.Length < 2) return jwt;
-            
-            // Decode payload (middle part)
-            string payload = parts[1];
-            
-            // Fix base64 padding
-            payload = payload.Replace('-', '+').Replace('_', '/');
-            switch (payload.Length % 4)
-            {
-                case 2: payload += "=="; break;
-                case 3: payload += "="; break;
-            }
-            
-            var payloadBytes = Convert.FromBase64String(payload);
-            var payloadJson = Encoding.UTF8.GetString(payloadBytes);
-            
-            // Parse JSON and extract "value" field
-            using var doc = JsonDocument.Parse(payloadJson);
-            if (doc.RootElement.TryGetProperty("value", out var valueElement))
-            {
-                return valueElement.GetString() ?? "";
-            }
-            
-            // If no "value" field, try "iv" or other fields
-            if (doc.RootElement.TryGetProperty("iv", out var ivElement))
-            {
-                return ivElement.GetString() ?? "";
-            }
-            
-            return jwt; // Return original if we can't decode
-        }
-        catch
-        {
-            return jwt; // Return original if decoding fails
         }
     }
 
