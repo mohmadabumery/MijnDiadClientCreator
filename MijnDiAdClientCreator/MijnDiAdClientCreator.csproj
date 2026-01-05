@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <!-- Correct NuGet package name for TOTP generation -->
-    <PackageReference Include="Otp.NET" Version="2.0.0" />
+    <PackageReference Include="Otp.NET" Version="1.4.1" />
   </ItemGroup>
 
 </Project>
