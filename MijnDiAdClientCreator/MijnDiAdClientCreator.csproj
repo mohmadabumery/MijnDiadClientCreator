@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Add OtpNet for TOTP generation -->
+    <!-- Added OtpNet package for TOTP generation -->
     <PackageReference Include="OtpNet" Version="2.0.0" />
   </ItemGroup>
 
