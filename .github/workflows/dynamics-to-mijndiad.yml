@@ -1,65 +1,30 @@
-name: Create MijnDiAd Client
+name: Dynamics → MijnDiAd Automation
 
 on:
   workflow_dispatch:
     inputs:
-      client_json:
-        description: 'Client JSON payload'
+      dynamics_json:
+        description: "JSON payload from Power Automate"
         required: true
-        default: '{"firstname":"Test","lastname":"User","email":"test@example.com","gender":"1","invoice_relation_id":"15","address":{"zipcode":"1011AA","house_number":"1","street":"Teststraat","city":"Amsterdam"}}'
-      validate_address:
-        description: 'Validate address before creating client'
-        required: false
-        default: 'true'
-        type: boolean
+        type: string
 
 jobs:
-  create-client:
-    runs-on: self-hosted
+  run-automation:
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '8.0.x'
 
-      - name: Verify .NET Installation
-        run: dotnet --version
-        shell: cmd
-
-      - name: Restore dependencies
-        run: dotnet restore MijnDiAdClientCreator/MijnDiAdClientCreator.csproj
-        shell: cmd
-
-      - name: Build application
-        run: dotnet build MijnDiAdClientCreator/MijnDiAdClientCreator.csproj --configuration Release --no-restore
-        shell: cmd
-
-      - name: Create JSON input file
-        shell: cmd
+      - name: Run MijnDiAd Automation
         run: |
-          echo Creating client_data.json from workflow input...
-          echo %CLIENT_JSON% > client_data.json
-          echo File created. First 200 characters:
-          powershell -Command "Get-Content client_data.json -TotalCount 1 | ForEach-Object { $_.Substring(0, [Math]::Min(200, $_.Length)) }"
+          dotnet run --project MijnDiadAutomation -- --json '${{ inputs.dynamics_json }}'
         env:
-          CLIENT_JSON: '${{ github.event.inputs.client_json }}'
-
-      - name: Run client creation
-        shell: cmd
-        run: |
-          echo Running client creation with dynamic input...
-          dotnet run --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj -- --json-file client_data.json
-        env:
+          MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
+          MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-          MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
-          MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
-          MIJNDIAD_TOTP_SECRET: ${{ secrets.MIJNDIAD_TOTP_SECRET }}
-
-      - name: Workflow Summary
-        if: always()
-        shell: cmd
-        run: |
-          if %ERRORLEVEL%==0 (
-            echo ✅ Client successfully created in MijnDiAd EPD
-          ) else (
-            echo ❌ Failed to create client - check logs above
-          )
