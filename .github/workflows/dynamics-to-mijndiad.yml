@@ -14,17 +14,20 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-      
+        uses: actions/checkout@v4
+
       - name: Setup .NET
-        uses: actions/setup-dotnet@v3
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
       - name: Run MijnDiAd Automation
-        run: |
-          dotnet run --project MijnDiadAutomation -- --json '${{ inputs.dynamics_json }}'
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+        run: |
+          dotnet run \
+            --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj \
+            -- \
+            --json '${{ inputs.dynamics_json }}'
