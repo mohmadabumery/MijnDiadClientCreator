@@ -1,7 +1,9 @@
 using System;
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace MijnDiadAutomation
@@ -12,7 +14,6 @@ namespace MijnDiadAutomation
         {
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
-            // New: detect direct JSON input
             string dynamicsJson = null;
 
             if (args.Length == 2 && args[0] == "--json")
@@ -32,7 +33,6 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // Read secrets from GitHub or environment
             string sessionCookie = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION");
             string xsrfToken = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF");
             string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
@@ -52,10 +52,38 @@ namespace MijnDiadAutomation
 
             try
             {
+                // 1️⃣ Create client
                 var response = await client.PostAsync(url, content);
                 var result = await response.Content.ReadAsStringAsync();
-                Console.WriteLine("\n== MijnDiAd Response ==");
+                Console.WriteLine("\n== MijnDiAd Client Response ==");
                 Console.WriteLine(result);
+
+                // Parse client ID
+                using var doc = JsonDocument.Parse(result);
+                int clientId = doc.RootElement.GetProperty("id").GetInt32();
+                Console.WriteLine($"Client ID: {clientId}");
+
+                // 2️⃣ Send questionnaires
+                int[] questionnaireIds = { 15, 4 };
+                foreach (var qId in questionnaireIds)
+                {
+                    var payload = new
+                    {
+                        client_id = clientId,
+                        questionnaire_id = qId,
+                        send_method = "email"
+                    };
+
+                    var qResponse = await client.PostAsJsonAsync(
+                        $"https://{tenant}.mijndiad.nl/api/client-questionnaires",
+                        payload
+                    );
+
+                    var qResult = await qResponse.Content.ReadAsStringAsync();
+                    Console.WriteLine($"\n== Questionnaire {qId} Response ==");
+                    Console.WriteLine(qResult);
+                }
+
             }
             catch (Exception ex)
             {
