@@ -16,7 +16,7 @@ namespace MijnDiadAutomation
 
             string dynamicsJson = null;
 
-            // 1️⃣ Detect JSON input
+            // Detect JSON input
             if (args.Length == 2 && args[0] == "--json")
             {
                 dynamicsJson = args[1];
@@ -34,7 +34,7 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // 2️⃣ Read secrets
+            // Read secrets
             string sessionCookie = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION");
             string xsrfToken = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF");
             string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
@@ -54,13 +54,13 @@ namespace MijnDiadAutomation
 
             try
             {
-                // 3️⃣ Create client
+                // 1️⃣ Create client
                 var response = await client.PostAsync(clientUrl, content);
                 var result = await response.Content.ReadAsStringAsync();
                 Console.WriteLine("\n== MijnDiAd Client Response ==");
                 Console.WriteLine(result);
 
-                // 4️⃣ Parse client ID correctly
+                // 2️⃣ Parse client ID
                 using var doc = JsonDocument.Parse(result);
                 int clientId = doc.RootElement
                                   .GetProperty("data")
@@ -69,15 +69,15 @@ namespace MijnDiadAutomation
                                   .GetInt32();
                 Console.WriteLine($"Client ID: {clientId}");
 
-                // 5️⃣ Send questionnaires
-                int[] questionnaireIds = { 15, 4 };
+                // 3️⃣ Send questionnaires
+                int[] questionnaireIds = { 5, 4 }; // Horizon and Medical
                 foreach (var qId in questionnaireIds)
                 {
                     var payload = new
                     {
                         client_id = clientId,
                         questionnaire_id = qId,
-                        send_method = "email"  // or "portal" if needed
+                        send_method = "email" // "email" or "portal"
                     };
 
                     var qResponse = await client.PostAsJsonAsync(
@@ -90,7 +90,7 @@ namespace MijnDiadAutomation
                     Console.WriteLine(qResult);
                 }
 
-                // 6️⃣ Optional: verify sent questionnaires
+                // 4️⃣ Optional: list all sent questionnaires for verification
                 var listResponse = await client.GetAsync(
                     $"https://{tenant}.mijndiad.nl/api/clients/{clientId}/questionnaires?sort=updated_at|desc&page=1&per_page=25"
                 );
