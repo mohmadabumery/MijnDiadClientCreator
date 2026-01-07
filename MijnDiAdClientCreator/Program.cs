@@ -12,7 +12,7 @@ namespace MijnDiadAutomation
         {
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
-            // Read JSON input
+            // New: detect direct JSON input
             string dynamicsJson = null;
 
             if (args.Length == 2 && args[0] == "--json")
@@ -32,7 +32,7 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            // Read GitHub secrets / environment variables
+            // Read secrets from GitHub or environment
             string sessionCookie = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION");
             string xsrfToken = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF");
             string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
@@ -43,9 +43,7 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            using var handler = new HttpClientHandler { UseCookies = false };
-            using var client = new HttpClient(handler);
-
+            using var client = new HttpClient();
             client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
             client.DefaultRequestHeaders.Add("Cookie", $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
 
@@ -56,7 +54,6 @@ namespace MijnDiadAutomation
             {
                 var response = await client.PostAsync(url, content);
                 var result = await response.Content.ReadAsStringAsync();
-
                 Console.WriteLine("\n== MijnDiAd Response ==");
                 Console.WriteLine(result);
             }
