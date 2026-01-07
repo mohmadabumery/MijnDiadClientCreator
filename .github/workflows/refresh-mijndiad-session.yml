@@ -16,10 +16,11 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Build project
+        run: dotnet build MijnDiAdClientCreator
+
       - name: Install Playwright
-        run: |
-          dotnet build MijnDiAdClientCreator
-          npx playwright install chromium
+        run: npx playwright install chromium
 
       - name: Refresh cookies
         env:
@@ -29,6 +30,11 @@ jobs:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
         run: |
           dotnet run --project MijnDiAdClientCreator refresh-session > cookies.json
+
+      - name: Authenticate GitHub CLI
+        run: gh auth setup-git
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Update GitHub Secrets
         env:
