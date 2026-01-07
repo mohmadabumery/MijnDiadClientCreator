@@ -6,7 +6,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Playwright;
-using OtpNet;
 
 namespace MijnDiAdClientCreator
 {
@@ -15,29 +14,25 @@ namespace MijnDiAdClientCreator
         static async Task Main(string[] args)
         {
             // ================================
-            // MODE 1: Refresh session
+            // MODE 1: Refresh session (coworker style)
             // ================================
             if (args.Length == 1 && args[0] == "refresh-session")
             {
-                await RefreshSessionAsync();
+                await RefreshSessionHumanAsync();
                 return;
             }
 
             // ================================
-            // MODE 2: Create client
+            // MODE 2: Create client (existing)
             // ================================
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
-            string dynamicsJson;
+            string dynamicsJson = null;
 
             if (args.Length == 2 && args[0] == "--json")
-            {
                 dynamicsJson = args[1];
-            }
             else if (args.Length == 1 && File.Exists(args[0]))
-            {
                 dynamicsJson = await File.ReadAllTextAsync(args[0]);
-            }
             else
             {
                 Console.WriteLine("Usage:");
@@ -53,7 +48,7 @@ namespace MijnDiAdClientCreator
 
             if (string.IsNullOrWhiteSpace(session) || string.IsNullOrWhiteSpace(xsrf))
             {
-                Console.WriteLine("Missing MIJNDIAD_SESSION or MIJNDIAD_XSRF.");
+                Console.WriteLine("Session cookie or XSRF token is missing.");
                 return;
             }
 
@@ -69,61 +64,61 @@ namespace MijnDiAdClientCreator
             var content = new StringContent(dynamicsJson, Encoding.UTF8, "application/json");
             var url = $"https://{tenant}.mijndiad.nl/api/clients";
 
-            var response = await client.PostAsync(url, content);
-            var result = await response.Content.ReadAsStringAsync();
-
-            Console.WriteLine("== MijnDiAd Response ==");
-            Console.WriteLine(result);
+            try
+            {
+                var response = await client.PostAsync(url, content);
+                var result = await response.Content.ReadAsStringAsync();
+                Console.WriteLine("\n== MijnDiAd Response ==");
+                Console.WriteLine(result);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error sending request: {ex.Message}");
+            }
         }
 
         // =====================================================
-        // SESSION REFRESH (Playwright + TOTP)
+        // REFRESH SESSION (human login)
         // =====================================================
-        static async Task RefreshSessionAsync()
+        static async Task RefreshSessionHumanAsync()
         {
-            var username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
-            var password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
             var tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT");
-            var totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
-
-            if (new[] { username, password, tenant, totpSecret }.Any(string.IsNullOrWhiteSpace))
-                throw new Exception("Missing environment variables for login.");
 
             using var playwright = await Playwright.CreateAsync();
             await using var browser = await playwright.Chromium.LaunchAsync(new()
             {
-                Headless = true
+                Headless = false // human can log in
             });
 
             var context = await browser.NewContextAsync();
             var page = await context.NewPageAsync();
 
-            await page.GotoAsync($"https://{tenant}.mijndiad.nl/login");
+            await page.GotoAsync($"https://{tenant}.mijndiad.nl/");
 
-            await page.FillAsync("input[type=email]", username);
-            await page.FillAsync("input[type=password]", password);
-            await page.ClickAsync("button[type=submit]");
+            Console.WriteLine("🚨 Please log in manually in the browser. Press ENTER here when done...");
+            Console.ReadLine();
 
-            var totp = new Totp(Base32Encoding.ToBytes(totpSecret));
-            var otpCode = totp.ComputeTotp();
-
-            await page.WaitForSelectorAsync("input[name=otp]");
-            await page.FillAsync("input[name=otp]", otpCode);
-            await page.ClickAsync("button[type=submit]");
-
-            await page.WaitForURLAsync("**/dashboard**");
-
+            // Grab cookies after human login
             var cookies = await context.CookiesAsync();
+            var session = cookies.FirstOrDefault(c => c.Name.EndsWith("_session"))?.Value;
+            var xsrf = cookies.FirstOrDefault(c => c.Name == "XSRF-TOKEN")?.Value;
 
-            var session = cookies.First(c => c.Name.EndsWith("_session")).Value;
-            var xsrf = cookies.First(c => c.Name == "XSRF-TOKEN").Value;
+            await browser.CloseAsync();
 
-            // Output JSON ONLY (used by GitHub Actions)
+            if (string.IsNullOrWhiteSpace(session) || string.IsNullOrWhiteSpace(xsrf))
+            {
+                Console.WriteLine("Failed to get session or XSRF. Login may have failed.");
+                return;
+            }
+
+            // Output JSON (for GitHub Actions)
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 session,
                 xsrf
             }));
+
+            Console.WriteLine("✅ Session refreshed successfully. You can now update GitHub secrets.");
         }
     }
 }
