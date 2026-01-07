@@ -1,21 +1,21 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using System.Linq;
 using Microsoft.Playwright;
 using OtpNet;
 
-namespace MijnDiadAutomation
+namespace MijnDiAdClientCreator
 {
     class Program
     {
         static async Task Main(string[] args)
         {
             // ================================
-            // MODE 1: Refresh session (OTP)
+            // MODE 1: Refresh session
             // ================================
             if (args.Length == 1 && args[0] == "refresh-session")
             {
@@ -24,11 +24,11 @@ namespace MijnDiadAutomation
             }
 
             // ================================
-            // MODE 2: Create client (existing)
+            // MODE 2: Create client
             // ================================
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
-            string dynamicsJson = null;
+            string dynamicsJson;
 
             if (args.Length == 2 && args[0] == "--json")
             {
@@ -47,44 +47,37 @@ namespace MijnDiadAutomation
                 return;
             }
 
-            string sessionCookie = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION");
-            string xsrfToken = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF");
-            string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT");
+            var session = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION");
+            var xsrf = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF");
+            var tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT");
 
-            if (string.IsNullOrWhiteSpace(sessionCookie) || string.IsNullOrWhiteSpace(xsrfToken))
+            if (string.IsNullOrWhiteSpace(session) || string.IsNullOrWhiteSpace(xsrf))
             {
-                Console.WriteLine("Session cookie or XSRF token is missing.");
+                Console.WriteLine("Missing MIJNDIAD_SESSION or MIJNDIAD_XSRF.");
                 return;
             }
 
             using var handler = new HttpClientHandler { UseCookies = false };
             using var client = new HttpClient(handler);
 
-            client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
+            client.DefaultRequestHeaders.Add("x-csrf-token", xsrf);
             client.DefaultRequestHeaders.Add(
                 "Cookie",
-                $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}"
+                $"{tenant}_session={session}; XSRF-TOKEN={xsrf}"
             );
 
             var content = new StringContent(dynamicsJson, Encoding.UTF8, "application/json");
             var url = $"https://{tenant}.mijndiad.nl/api/clients";
 
-            try
-            {
-                var response = await client.PostAsync(url, content);
-                var result = await response.Content.ReadAsStringAsync();
+            var response = await client.PostAsync(url, content);
+            var result = await response.Content.ReadAsStringAsync();
 
-                Console.WriteLine("\n== MijnDiAd Response ==");
-                Console.WriteLine(result);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error sending request: {ex.Message}");
-            }
+            Console.WriteLine("== MijnDiAd Response ==");
+            Console.WriteLine(result);
         }
 
         // =====================================================
-        // SESSION REFRESH (Playwright + OTP / TOTP)
+        // SESSION REFRESH (Playwright + TOTP)
         // =====================================================
         static async Task RefreshSessionAsync()
         {
@@ -94,9 +87,7 @@ namespace MijnDiadAutomation
             var totpSecret = Environment.GetEnvironmentVariable("MIJNDIAD_TOTP_SECRET");
 
             if (new[] { username, password, tenant, totpSecret }.Any(string.IsNullOrWhiteSpace))
-            {
-                throw new Exception("Missing required environment variables for session refresh.");
-            }
+                throw new Exception("Missing environment variables for login.");
 
             using var playwright = await Playwright.CreateAsync();
             await using var browser = await playwright.Chromium.LaunchAsync(new()
@@ -109,12 +100,10 @@ namespace MijnDiadAutomation
 
             await page.GotoAsync($"https://{tenant}.mijndiad.nl/login");
 
-            // Login step
             await page.FillAsync("input[type=email]", username);
             await page.FillAsync("input[type=password]", password);
             await page.ClickAsync("button[type=submit]");
 
-            // OTP step
             var totp = new Totp(Base32Encoding.ToBytes(totpSecret));
             var otpCode = totp.ComputeTotp();
 
@@ -122,7 +111,6 @@ namespace MijnDiadAutomation
             await page.FillAsync("input[name=otp]", otpCode);
             await page.ClickAsync("button[type=submit]");
 
-            // Wait for successful login
             await page.WaitForURLAsync("**/dashboard**");
 
             var cookies = await context.CookiesAsync();
@@ -130,7 +118,7 @@ namespace MijnDiadAutomation
             var session = cookies.First(c => c.Name.EndsWith("_session")).Value;
             var xsrf = cookies.First(c => c.Name == "XSRF-TOKEN").Value;
 
-            // IMPORTANT: output JSON only (used by GitHub Actions)
+            // Output JSON ONLY (used by GitHub Actions)
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 session,
