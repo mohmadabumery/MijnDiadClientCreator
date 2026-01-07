@@ -27,7 +27,16 @@ jobs:
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
         run: |
+          echo "== Running Dynamics → MijnDiAd Automation =="
+          set -e  # fail immediately if any command fails
+
+          # Run the .NET automation
           dotnet run \
             --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj \
             -- \
-            --json '${{ inputs.dynamics_json }}'
+            --json '${{ inputs.dynamics_json }}' || {
+              echo "::error ::Automation failed. Check the logs above."
+              exit 1
+            }
+          
+          echo "== Automation completed =="
