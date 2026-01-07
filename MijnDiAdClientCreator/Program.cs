@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -36,7 +37,7 @@ namespace MijnDiadAutomation
             string sessionCookie = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION");
             string xsrfToken = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF");
             string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
-            string questionnaireIds = Environment.GetEnvironmentVariable("MIJNDIAD_QUESTIONNAIRE_IDS") ?? "5"; // Default to questionnaire 5
+            string questionnaireIds = Environment.GetEnvironmentVariable("MIJNDIAD_QUESTIONNAIRE_IDS") ?? "5";
 
             if (string.IsNullOrWhiteSpace(sessionCookie) || string.IsNullOrWhiteSpace(xsrfToken))
             {
@@ -92,7 +93,8 @@ namespace MijnDiadAutomation
             Console.WriteLine("\n== Step 2: Sending Questionnaires ==");
 
             // Parse questionnaire IDs (comma-separated, e.g., "5,7")
-            var questionnaireIds = questionnaireIdsStr.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            var questionnaireIds = questionnaireIdsStr
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
                 .Select(id => int.Parse(id.Trim()))
                 .ToArray();
 
@@ -121,8 +123,7 @@ namespace MijnDiadAutomation
                     email_template_id = (string)null,
                     email_type = "EMAIL_TEMPLATE_INVITE_CLIENT_QUESTIONNAIRE",
                     general_files = new object[0],
-                    regarding = (string)null,
-                    use_custom = false
+                    regarding = (string)null
                 },
                 notification_date = (string)null,
                 plan_questionnaire = false,
