@@ -13,13 +13,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout repository
       - uses: actions/checkout@v4
 
+      # 2️⃣ Setup .NET
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
-      - name: Create client in MijnDiAd
+      # 3️⃣ Build project
+      - name: Build MijnDiAd project
+        run: dotnet build MijnDiAdClientCreator
+
+      # 4️⃣ Run automation (send JSON to MijnDiAd)
+      - name: Run MijnDiAd Automation
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
