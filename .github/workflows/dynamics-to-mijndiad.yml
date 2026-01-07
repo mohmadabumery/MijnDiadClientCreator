@@ -7,9 +7,9 @@ on:
         required: true
         type: string
       questionnaire_ids:
-        description: "Comma-separated questionnaire IDs (e.g., 5,7)"
+        description: "Comma-separated questionnaire IDs (e.g., 5,4)"
         required: false
-        default: "5"
+        default: "5,4"
         type: string
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
-          MIJNDIAD_QUESTIONNAIRE_IDS: ${{ inputs.questionnaire_ids }}
+          MIJNDIAD_QUESTIONNAIRE_IDS: ${{ inputs.questionnaire_ids || secrets.MIJNDIAD_QUESTIONNAIRE_IDS }}
         run: |
           echo "== Running Dynamics → MijnDiAd Automation =="
           set -e
