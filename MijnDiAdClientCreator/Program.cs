@@ -13,18 +13,18 @@ namespace MijnDiAdClientCreator
     {
         static async Task Main(string[] args)
         {
-            // ================================
-            // MODE 1: Refresh session (coworker style)
-            // ================================
+            // =======================================
+            // MODE 1: Refresh session (human login)
+            // =======================================
             if (args.Length == 1 && args[0] == "refresh-session")
             {
                 await RefreshSessionHumanAsync();
                 return;
             }
 
-            // ================================
-            // MODE 2: Create client (existing)
-            // ================================
+            // =======================================
+            // MODE 2: Create client (JSON payload)
+            // =======================================
             Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
 
             string dynamicsJson = null;
@@ -77,17 +77,25 @@ namespace MijnDiAdClientCreator
             }
         }
 
-        // =====================================================
-        // REFRESH SESSION (human login)
-        // =====================================================
+        // =======================================
+        // Human-login session refresh
+        // =======================================
         static async Task RefreshSessionHumanAsync()
         {
+            var username = Environment.GetEnvironmentVariable("MIJNDIAD_USERNAME");
+            var password = Environment.GetEnvironmentVariable("MIJNDIAD_PASSWORD");
             var tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT");
+
+            if (new[] { username, password, tenant }.Any(string.IsNullOrWhiteSpace))
+            {
+                throw new Exception("Missing required environment variables for session refresh.");
+            }
 
             using var playwright = await Playwright.CreateAsync();
             await using var browser = await playwright.Chromium.LaunchAsync(new()
             {
-                Headless = false // human can log in
+                Headless = false, // show browser for manual login
+                SlowMo = 250
             });
 
             var context = await browser.NewContextAsync();
@@ -95,10 +103,9 @@ namespace MijnDiAdClientCreator
 
             await page.GotoAsync($"https://{tenant}.mijndiad.nl/");
 
-            Console.WriteLine("🚨 Please log in manually in the browser. Press ENTER here when done...");
+            Console.WriteLine("🚨 Please log in manually in the browser, complete OTP if required, then press ENTER here.");
             Console.ReadLine();
 
-            // Grab cookies after human login
             var cookies = await context.CookiesAsync();
             var session = cookies.FirstOrDefault(c => c.Name.EndsWith("_session"))?.Value;
             var xsrf = cookies.FirstOrDefault(c => c.Name == "XSRF-TOKEN")?.Value;
@@ -111,14 +118,9 @@ namespace MijnDiAdClientCreator
                 return;
             }
 
-            // Output JSON (for GitHub Actions)
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                session,
-                xsrf
-            }));
-
-            Console.WriteLine("✅ Session refreshed successfully. You can now update GitHub secrets.");
+            // Output JSON for GitHub Actions
+            Console.WriteLine(JsonSerializer.Serialize(new { session, xsrf }));
+            Console.WriteLine("✅ Session refreshed successfully!");
         }
     }
 }
