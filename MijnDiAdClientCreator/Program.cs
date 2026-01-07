@@ -5,87 +5,108 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
-namespace MijnDiAdClientCreator
+class Program
 {
-    class Program
+    static async Task Main(string[] args)
     {
-        static async Task Main(string[] args)
+        // Replace these with your login credentials
+        string email = "your-email@example.com";
+        string password = "your-password";
+
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri("https://lngvty.mijndiad.nl/");
+
+        Console.WriteLine("== Logging in ==");
+
+        // 1️⃣ Login to get session and CSRF token
+        var loginPayload = new
         {
-            // JSON input from arguments
-            string clientJson = args.Length > 0 ? args[0] : "{}";
+            email = email,
+            password = password
+        };
 
-            using var client = new HttpClient();
-            client.BaseAddress = new Uri("https://lngvty.mijndiad.nl/api/");
-            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        var loginContent = new StringContent(JsonSerializer.Serialize(loginPayload), Encoding.UTF8, "application/json");
+        var loginResponse = await client.PostAsync("api/login", loginContent);
+        var loginResult = await loginResponse.Content.ReadAsStringAsync();
 
-            // TODO: Set your auth cookies or headers here
-            client.DefaultRequestHeaders.Add("Cookie", "lngvty_session=YOUR_SESSION; XSRF-TOKEN=YOUR_XSRF_TOKEN");
-            client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", "YOUR_XSRF_TOKEN");
+        if (!loginResponse.IsSuccessStatusCode)
+        {
+            Console.WriteLine("Login failed: " + loginResult);
+            return;
+        }
 
-            try
+        Console.WriteLine("Login successful.");
+
+        // Extract cookies from response headers
+        if (!loginResponse.Headers.TryGetValues("Set-Cookie", out var cookies))
+        {
+            Console.WriteLine("No session cookies received.");
+            return;
+        }
+
+        string cookieHeader = string.Join("; ", cookies);
+        client.DefaultRequestHeaders.Add("Cookie", cookieHeader);
+
+        // You may need to extract XSRF-TOKEN from cookie manually if required
+        string xsrfToken = ExtractXsrfToken(cookieHeader);
+        client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", xsrfToken);
+
+        // 2️⃣ Create client
+        Console.WriteLine("== Creating client ==");
+        string clientJson = args.Length > 0 ? args[0] : "{}"; // JSON payload from command line
+
+        var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
+        var createClientResponse = await client.PostAsync("api/clients", clientContent);
+        string createClientResult = await createClientResponse.Content.ReadAsStringAsync();
+
+        var createClientDoc = JsonDocument.Parse(createClientResult);
+        if (createClientDoc.RootElement.TryGetProperty("data", out var dataElement) &&
+            dataElement.TryGetProperty("client", out var clientElement) &&
+            clientElement.TryGetProperty("id", out var idElement))
+        {
+            int clientId = idElement.GetInt32();
+            Console.WriteLine($"Client created successfully. ID: {clientId}");
+
+            // 3️⃣ Send questionnaires dynamically
+            int[] questionnaireIds = new int[] { 4, 5 }; // Medical and Horizon
+
+            foreach (var qid in questionnaireIds)
             {
-                // 1️⃣ Create client
-                Console.WriteLine("== Creating client ==");
-                var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
-                var createResponse = await client.PostAsync("clients", clientContent);
-                string createResult = await createResponse.Content.ReadAsStringAsync();
-                Console.WriteLine("== Client Response ==");
-                Console.WriteLine(createResult);
-
-                // Parse client_id from response
-                using var doc = JsonDocument.Parse(createResult);
-                int clientId = doc.RootElement.GetProperty("data").GetProperty("client").GetProperty("id").GetInt32();
-                string clientEmail = doc.RootElement.GetProperty("data").GetProperty("client").GetProperty("email").GetString();
-
-                Console.WriteLine($"Client ID: {clientId}");
-                Console.WriteLine($"Client Email: {clientEmail}");
-
-                // 2️⃣ Send questionnaires dynamically
-                Console.WriteLine("== Sending questionnaires ==");
-
                 var questionnairePayload = new
                 {
                     client_id = clientId,
-                    questionnaire_ids = new int[] { 4, 5 }, // Medical + Horizon
+                    questionnaire_ids = new int[] { qid },
                     send_to_client = 1,
-                    email = clientEmail,
-                    email_data = new
-                    {
-                        use_custom = false,
-                        concept_id = (int?)null,
-                        subject = "",
-                        content = "",
-                        ics = "0",
-                        questionnaire_ids = new int[] { }
-                    },
-                    attachments = Array.Empty<object>(),
-                    client_agreements = Array.Empty<object>(),
-                    client_documents = Array.Empty<object>(),
-                    client_files = Array.Empty<object>(),
-                    concept_attachments = Array.Empty<object>(),
-                    concept_id = (int?)null,
-                    content = "",
-                    documents = Array.Empty<object>(),
-                    email_template_id = (int?)null,
-                    email_type = "EMAIL_TEMPLATE_INVITE_CLIENT_QUESTIONNAIRE",
-                    general_files = Array.Empty<object>(),
-                    ics = "0",
-                    _method = (string?)null
+                    email = clientElement.GetProperty("email").GetString(),
+                    email_type = "EMAIL_TEMPLATE_INVITE_CLIENT_QUESTIONNAIRE"
                 };
 
-                string questionnaireJson = JsonSerializer.Serialize(questionnairePayload);
-                var questionnaireContent = new StringContent(questionnaireJson, Encoding.UTF8, "application/json");
-                var questionnaireResponse = await client.PostAsync("client-questionnaires", questionnaireContent);
+                var questionnaireContent = new StringContent(JsonSerializer.Serialize(questionnairePayload), Encoding.UTF8, "application/json");
+                var questionnaireResponse = await client.PostAsync("api/client-questionnaires", questionnaireContent);
                 string questionnaireResult = await questionnaireResponse.Content.ReadAsStringAsync();
 
-                Console.WriteLine("== Questionnaires Response ==");
+                Console.WriteLine($"== Questionnaire {qid} Response ==");
                 Console.WriteLine(questionnaireResult);
-
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error: {ex.Message}");
             }
         }
+        else
+        {
+            Console.WriteLine("Client creation failed or response invalid:");
+            Console.WriteLine(createClientResult);
+        }
+
+        Console.WriteLine("== Automation completed ==");
+    }
+
+    // Helper to extract XSRF-TOKEN from cookies
+    static string ExtractXsrfToken(string cookieHeader)
+    {
+        foreach (var cookie in cookieHeader.Split(';'))
+        {
+            var parts = cookie.Split('=');
+            if (parts.Length == 2 && parts[0].Trim() == "XSRF-TOKEN")
+                return parts[1];
+        }
+        return "";
     }
 }
