@@ -16,11 +16,15 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Build project
+      - name: Restore & build
         run: dotnet build MijnDiAdClientCreator
 
-      - name: Install Playwright
-        run: npx playwright install chromium
+      # ✅ THIS IS THE IMPORTANT FIX
+      - name: Install Playwright browsers (DOTNET)
+        run: |
+          cd MijnDiAdClientCreator
+          dotnet tool install --global Microsoft.Playwright.CLI
+          playwright install chromium
 
       - name: Refresh cookies
         env:
@@ -32,9 +36,9 @@ jobs:
           dotnet run --project MijnDiAdClientCreator refresh-session > cookies.json
 
       - name: Authenticate GitHub CLI
-        run: gh auth setup-git
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: gh auth setup-git
 
       - name: Update GitHub Secrets
         env:
