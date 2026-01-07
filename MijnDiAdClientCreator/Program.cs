@@ -70,7 +70,11 @@ namespace MijnDiadAutomation
 
                 // Parse the response to get client ID and email
                 var jsonResponse = JsonDocument.Parse(result);
-                var clientData = jsonResponse.RootElement.GetProperty("data");
+                
+                // The structure is data.client, not just data
+                var dataObject = jsonResponse.RootElement.GetProperty("data");
+                var clientData = dataObject.GetProperty("client");
+                
                 int clientId = clientData.GetProperty("id").GetInt32();
                 string clientEmail = clientData.GetProperty("email").GetString();
 
@@ -131,6 +135,10 @@ namespace MijnDiadAutomation
             };
 
             var jsonPayload = JsonSerializer.Serialize(payload);
+            
+            Console.WriteLine("\nQuestionnaire Payload:");
+            Console.WriteLine(jsonPayload);
+            
             var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
             
             var url = $"https://{tenant}.mijndiad.nl/api/client-questionnaires";
@@ -144,7 +152,7 @@ namespace MijnDiadAutomation
                 var response = await client.PostAsync(url, content);
                 var result = await response.Content.ReadAsStringAsync();
 
-                Console.WriteLine("Questionnaire Send Response:");
+                Console.WriteLine("\nQuestionnaire Send Response:");
                 Console.WriteLine(result);
 
                 if (response.IsSuccessStatusCode)
@@ -160,6 +168,7 @@ namespace MijnDiadAutomation
             catch (Exception ex)
             {
                 Console.WriteLine($"Error sending questionnaires: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
             }
         }
     }
