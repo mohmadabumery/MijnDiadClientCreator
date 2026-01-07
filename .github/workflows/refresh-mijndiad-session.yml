@@ -1,9 +1,6 @@
 name: Refresh MijnDiAd Session
 
 on:
-  schedule:
-    # every 6 hours
-    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 jobs:
@@ -11,43 +8,36 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repo
       - uses: actions/checkout@v4
 
-      # 2️⃣ Setup .NET
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
-      # 3️⃣ Build project
-      - name: Build MijnDiAd project
+      - name: Build project
         run: dotnet build MijnDiAdClientCreator
 
-      # 4️⃣ Install Playwright browsers for .NET
       - name: Install Playwright browsers
         run: |
           cd MijnDiAdClientCreator
           dotnet tool install --global Microsoft.Playwright.CLI
           playwright install chromium
 
-      # 5️⃣ Refresh session (HUMAN login)
-      - name: Refresh cookies
+      - name: Refresh cookies (human login)
         env:
           MIJNDIAD_USERNAME: ${{ secrets.MIJNDIAD_USERNAME }}
           MIJNDIAD_PASSWORD: ${{ secrets.MIJNDIAD_PASSWORD }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
         run: |
-          echo "⚠️ The browser will open. You must log in manually and press ENTER."
+          echo "⚠️ Open browser, login manually, complete OTP, press ENTER"
           dotnet run --project MijnDiAdClientCreator refresh-session > cookies.json
 
-      # 6️⃣ Authenticate GitHub CLI (required to update secrets)
       - name: Authenticate GitHub CLI
         uses: actions/setup-gh-cli@v2
         with:
           token: ${{ secrets.GH_PAT }}
 
-      # 7️⃣ Update GitHub secrets with new cookies
-      - name: Update GitHub Secrets
+      - name: Update GitHub secrets
         run: |
           gh secret set MIJNDIAD_SESSION --body "$(jq -r '.session' cookies.json)"
           gh secret set MIJNDIAD_XSRF --body "$(jq -r '.xsrf' cookies.json)"
