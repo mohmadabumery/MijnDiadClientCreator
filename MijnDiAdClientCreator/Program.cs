@@ -96,80 +96,105 @@ namespace MijnDiadAutomation
         {
             Console.WriteLine("\n== Step 2: Sending Questionnaires ==");
 
-            // Parse questionnaire IDs (comma-separated, e.g., "5,7")
+            // Parse questionnaire IDs (comma-separated, e.g., "5,4")
             var questionnaireIds = questionnaireIdsStr
                 .Split(',', StringSplitOptions.RemoveEmptyEntries)
                 .Select(id => int.Parse(id.Trim()))
                 .ToArray();
 
-            // Build the payload based on your network log
-            var payload = new
+            Console.WriteLine($"Will send {questionnaireIds.Length} questionnaire(s) separately: {string.Join(", ", questionnaireIds)}");
+
+            int successCount = 0;
+            int failCount = 0;
+
+            // Send each questionnaire separately
+            for (int i = 0; i < questionnaireIds.Length; i++)
             {
-                client_id = clientId,
-                questionnaire_ids = questionnaireIds,
-                send_to_client = 1,
-                email = clientEmail,
-                client_relation_id = (string)null,
-                email_data = new
+                var questionnaireId = questionnaireIds[i];
+                Console.WriteLine($"\n--- Sending Questionnaire {i + 1}/{questionnaireIds.Length} (ID: {questionnaireId}) ---");
+
+                // Build the payload for a single questionnaire
+                var payload = new
                 {
-                    use_custom = false,
-                    concept_id = (string)null,
-                    subject = "",
-                    content = "",
-                    ics = "0",
-                    questionnaire_ids = new int[0],
-                    attachments = new object[0],
-                    client_agreements = new object[0],
-                    client_documents = new object[0],
-                    client_files = new object[0],
-                    concept_attachments = new object[0],
-                    documents = new object[0],
-                    email_template_id = (string)null,
-                    email_type = "EMAIL_TEMPLATE_INVITE_CLIENT_QUESTIONNAIRE",
-                    general_files = new object[0],
-                    regarding = (string)null
-                },
-                notification_date = (string)null,
-                plan_questionnaire = false,
-                _method = (string)null
-            };
+                    client_id = clientId,
+                    questionnaire_ids = new int[] { questionnaireId }, // Single questionnaire
+                    send_to_client = 1,
+                    email = clientEmail,
+                    client_relation_id = (string)null,
+                    email_data = new
+                    {
+                        use_custom = false,
+                        concept_id = (string)null,
+                        subject = "",
+                        content = "",
+                        ics = "0",
+                        questionnaire_ids = new int[0],
+                        attachments = new object[0],
+                        client_agreements = new object[0],
+                        client_documents = new object[0],
+                        client_files = new object[0],
+                        concept_attachments = new object[0],
+                        documents = new object[0],
+                        email_template_id = (string)null,
+                        email_type = "EMAIL_TEMPLATE_INVITE_CLIENT_QUESTIONNAIRE",
+                        general_files = new object[0],
+                        regarding = (string)null
+                    },
+                    notification_date = (string)null,
+                    plan_questionnaire = false,
+                    _method = (string)null
+                };
 
-            var jsonPayload = JsonSerializer.Serialize(payload);
-            
-            Console.WriteLine("\nQuestionnaire Payload:");
-            Console.WriteLine(jsonPayload);
-            
-            var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-            
-            var url = $"https://{tenant}.mijndiad.nl/api/client-questionnaires";
-
-            try
-            {
-                // Update headers for this request
-                client.DefaultRequestHeaders.Remove("x-csrf-token");
-                client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
+                var jsonPayload = JsonSerializer.Serialize(payload);
                 
-                var response = await client.PostAsync(url, content);
-                var result = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"Payload: {jsonPayload}");
+                
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                
+                var url = $"https://{tenant}.mijndiad.nl/api/client-questionnaires";
 
-                Console.WriteLine("\nQuestionnaire Send Response:");
-                Console.WriteLine(result);
-
-                if (response.IsSuccessStatusCode)
+                try
                 {
-                    Console.WriteLine($"\n✓ Questionnaires sent successfully to {clientEmail}!");
-                    Console.WriteLine($"  Questionnaire IDs: {string.Join(", ", questionnaireIds)}");
+                    // Update headers for this request
+                    client.DefaultRequestHeaders.Remove("x-csrf-token");
+                    client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
+                    
+                    var response = await client.PostAsync(url, content);
+                    var result = await response.Content.ReadAsStringAsync();
+
+                    Console.WriteLine($"Response: {result}");
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine($"✓ Questionnaire {questionnaireId} sent successfully!");
+                        successCount++;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"✗ Failed to send questionnaire {questionnaireId}. Status: {response.StatusCode}");
+                        failCount++;
+                    }
+
+                    // Small delay between requests to avoid rate limiting
+                    if (i < questionnaireIds.Length - 1)
+                    {
+                        await Task.Delay(500); // 500ms delay
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    Console.WriteLine($"\n✗ Failed to send questionnaires. Status: {response.StatusCode}");
+                    Console.WriteLine($"Error sending questionnaire {questionnaireId}: {ex.Message}");
+                    failCount++;
                 }
             }
-            catch (Exception ex)
+
+            Console.WriteLine("\n=== Summary ===");
+            Console.WriteLine($"✓ Successfully sent: {successCount} questionnaire(s)");
+            if (failCount > 0)
             {
-                Console.WriteLine($"Error sending questionnaires: {ex.Message}");
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                Console.WriteLine($"✗ Failed: {failCount} questionnaire(s)");
             }
+            Console.WriteLine($"Email: {clientEmail}");
         }
     }
 }
