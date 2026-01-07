@@ -13,15 +13,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout repo
       - uses: actions/checkout@v4
 
+      # 2️⃣ Setup .NET
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: '8.0.x'
 
-      - name: Build project
-        run: dotnet build MijnDiAdClientCreator
-
+      # 3️⃣ Run automation
       - name: Run MijnDiAd Automation
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
@@ -29,6 +29,6 @@ jobs:
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
         run: |
           dotnet run \
-            --project MijnDiAdClientCreator \
+            --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj \
             -- \
             --json '${{ inputs.dynamics_json }}'
