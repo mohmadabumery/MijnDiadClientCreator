@@ -1,5 +1,4 @@
 name: Dynamics → MijnDiAd Automation
-
 on:
   workflow_dispatch:
     inputs:
@@ -7,30 +6,34 @@ on:
         description: "JSON payload from Power Automate"
         required: true
         type: string
+      questionnaire_ids:
+        description: "Comma-separated questionnaire IDs (e.g., 5,7)"
+        required: false
+        default: "5"
+        type: string
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+      
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-
+      
       - name: Run MijnDiAd Automation
         env:
           MIJNDIAD_SESSION: ${{ secrets.MIJNDIAD_SESSION }}
           MIJNDIAD_XSRF: ${{ secrets.MIJNDIAD_XSRF }}
           MIJNDIAD_TENANT: ${{ secrets.MIJNDIAD_TENANT }}
+          MIJNDIAD_QUESTIONNAIRE_IDS: ${{ inputs.questionnaire_ids }}
         run: |
           echo "== Running Dynamics → MijnDiAd Automation =="
-          set -e  # fail immediately if any command fails
-
-          # Run the .NET automation
+          set -e
+          
           dotnet run \
             --project MijnDiAdClientCreator/MijnDiAdClientCreator.csproj \
             -- \
