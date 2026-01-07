@@ -1,113 +1,90 @@
 using System;
-using System.IO;
 using System.Net.Http;
-using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
-namespace MijnDiadAutomation
+namespace MijnDiAdClientCreator
 {
     class Program
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("== Dynamics → MijnDiAd Automation ==");
-
-            string dynamicsJson = null;
-
-            // Detect JSON input
-            if (args.Length == 2 && args[0] == "--json")
-            {
-                dynamicsJson = args[1];
-            }
-            else if (args.Length == 1 && File.Exists(args[0]))
-            {
-                dynamicsJson = await File.ReadAllTextAsync(args[0]);
-            }
-            else
-            {
-                Console.WriteLine("Usage:");
-                Console.WriteLine("dotnet run -- --json \"{ ... }\"");
-                Console.WriteLine("or");
-                Console.WriteLine("dotnet run path/to/file.json");
-                return;
-            }
-
-            // Read secrets
-            string sessionCookie = Environment.GetEnvironmentVariable("MIJNDIAD_SESSION");
-            string xsrfToken = Environment.GetEnvironmentVariable("MIJNDIAD_XSRF");
-            string tenant = Environment.GetEnvironmentVariable("MIJNDIAD_TENANT") ?? "lngvty";
-
-            if (string.IsNullOrWhiteSpace(sessionCookie) || string.IsNullOrWhiteSpace(xsrfToken))
-            {
-                Console.WriteLine("Session cookie or XSRF token is missing.");
-                return;
-            }
+            // JSON input from arguments
+            string clientJson = args.Length > 0 ? args[0] : "{}";
 
             using var client = new HttpClient();
-            client.DefaultRequestHeaders.Add("x-csrf-token", xsrfToken);
-            client.DefaultRequestHeaders.Add("Cookie", $"{tenant}_session={sessionCookie}; XSRF-TOKEN={xsrfToken}");
+            client.BaseAddress = new Uri("https://lngvty.mijndiad.nl/api/");
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var content = new StringContent(dynamicsJson, Encoding.UTF8, "application/json");
-            var clientUrl = $"https://{tenant}.mijndiad.nl/api/clients";
+            // TODO: Set your auth cookies or headers here
+            client.DefaultRequestHeaders.Add("Cookie", "lngvty_session=YOUR_SESSION; XSRF-TOKEN=YOUR_XSRF_TOKEN");
+            client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", "YOUR_XSRF_TOKEN");
 
             try
             {
                 // 1️⃣ Create client
-                var response = await client.PostAsync(clientUrl, content);
-                var result = await response.Content.ReadAsStringAsync();
-                Console.WriteLine("\n== MijnDiAd Client Response ==");
-                Console.WriteLine(result);
+                Console.WriteLine("== Creating client ==");
+                var clientContent = new StringContent(clientJson, Encoding.UTF8, "application/json");
+                var createResponse = await client.PostAsync("clients", clientContent);
+                string createResult = await createResponse.Content.ReadAsStringAsync();
+                Console.WriteLine("== Client Response ==");
+                Console.WriteLine(createResult);
 
-                // 2️⃣ Parse client ID and email
-                using var doc = JsonDocument.Parse(result);
-                int clientId = doc.RootElement
-                                  .GetProperty("data")
-                                  .GetProperty("client")
-                                  .GetProperty("id")
-                                  .GetInt32();
-                string clientEmail = JsonDocument.Parse(dynamicsJson)
-                                     .RootElement
-                                     .GetProperty("email")
-                                     .GetString();
+                // Parse client_id from response
+                using var doc = JsonDocument.Parse(createResult);
+                int clientId = doc.RootElement.GetProperty("data").GetProperty("client").GetProperty("id").GetInt32();
+                string clientEmail = doc.RootElement.GetProperty("data").GetProperty("client").GetProperty("email").GetString();
 
                 Console.WriteLine($"Client ID: {clientId}");
                 Console.WriteLine($"Client Email: {clientEmail}");
 
-                // 3️⃣ Send questionnaires via email
-                int[] questionnaireIds = { 5, 4 }; // Horizon and Medical
-                foreach (var qId in questionnaireIds)
+                // 2️⃣ Send questionnaires dynamically
+                Console.WriteLine("== Sending questionnaires ==");
+
+                var questionnairePayload = new
                 {
-                    var payload = new
+                    client_id = clientId,
+                    questionnaire_ids = new int[] { 4, 5 }, // Medical + Horizon
+                    send_to_client = 1,
+                    email = clientEmail,
+                    email_data = new
                     {
-                        client_id = clientId,
-                        questionnaire_id = qId,
-                        send_method = "email",
-                        email = clientEmail
-                    };
+                        use_custom = false,
+                        concept_id = (int?)null,
+                        subject = "",
+                        content = "",
+                        ics = "0",
+                        questionnaire_ids = new int[] { }
+                    },
+                    attachments = Array.Empty<object>(),
+                    client_agreements = Array.Empty<object>(),
+                    client_documents = Array.Empty<object>(),
+                    client_files = Array.Empty<object>(),
+                    concept_attachments = Array.Empty<object>(),
+                    concept_id = (int?)null,
+                    content = "",
+                    documents = Array.Empty<object>(),
+                    email_template_id = (int?)null,
+                    email_type = "EMAIL_TEMPLATE_INVITE_CLIENT_QUESTIONNAIRE",
+                    general_files = Array.Empty<object>(),
+                    ics = "0",
+                    _method = (string?)null
+                };
 
-                    var qResponse = await client.PostAsJsonAsync(
-                        $"https://{tenant}.mijndiad.nl/api/client-questionnaires",
-                        payload
-                    );
+                string questionnaireJson = JsonSerializer.Serialize(questionnairePayload);
+                var questionnaireContent = new StringContent(questionnaireJson, Encoding.UTF8, "application/json");
+                var questionnaireResponse = await client.PostAsync("client-questionnaires", questionnaireContent);
+                string questionnaireResult = await questionnaireResponse.Content.ReadAsStringAsync();
 
-                    var qResult = await qResponse.Content.ReadAsStringAsync();
-                    Console.WriteLine($"\n== Questionnaire {qId} Response ==");
-                    Console.WriteLine(qResult);
-                }
+                Console.WriteLine("== Questionnaires Response ==");
+                Console.WriteLine(questionnaireResult);
 
-                // 4️⃣ List sent questionnaires for verification
-                var listResponse = await client.GetAsync(
-                    $"https://{tenant}.mijndiad.nl/api/clients/{clientId}/questionnaires?sort=updated_at|desc&page=1&per_page=25"
-                );
-                var listJson = await listResponse.Content.ReadAsStringAsync();
-                Console.WriteLine("\n== Sent Questionnaires List ==");
-                Console.WriteLine(listJson);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error sending request: {ex.Message}");
+                Console.WriteLine($"Error: {ex.Message}");
             }
         }
     }
