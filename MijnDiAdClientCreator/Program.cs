@@ -60,16 +60,22 @@ namespace MijnDiadAutomation
                 Console.WriteLine("\n== MijnDiAd Client Response ==");
                 Console.WriteLine(result);
 
-                // 2️⃣ Parse client ID
+                // 2️⃣ Parse client ID and email
                 using var doc = JsonDocument.Parse(result);
                 int clientId = doc.RootElement
                                   .GetProperty("data")
                                   .GetProperty("client")
                                   .GetProperty("id")
                                   .GetInt32();
-                Console.WriteLine($"Client ID: {clientId}");
+                string clientEmail = JsonDocument.Parse(dynamicsJson)
+                                     .RootElement
+                                     .GetProperty("email")
+                                     .GetString();
 
-                // 3️⃣ Send questionnaires
+                Console.WriteLine($"Client ID: {clientId}");
+                Console.WriteLine($"Client Email: {clientEmail}");
+
+                // 3️⃣ Send questionnaires via email
                 int[] questionnaireIds = { 5, 4 }; // Horizon and Medical
                 foreach (var qId in questionnaireIds)
                 {
@@ -77,7 +83,8 @@ namespace MijnDiadAutomation
                     {
                         client_id = clientId,
                         questionnaire_id = qId,
-                        send_method = "email" // "email" or "portal"
+                        send_method = "email",
+                        email = clientEmail
                     };
 
                     var qResponse = await client.PostAsJsonAsync(
@@ -90,7 +97,7 @@ namespace MijnDiadAutomation
                     Console.WriteLine(qResult);
                 }
 
-                // 4️⃣ Optional: list all sent questionnaires for verification
+                // 4️⃣ List sent questionnaires for verification
                 var listResponse = await client.GetAsync(
                     $"https://{tenant}.mijndiad.nl/api/clients/{clientId}/questionnaires?sort=updated_at|desc&page=1&per_page=25"
                 );
